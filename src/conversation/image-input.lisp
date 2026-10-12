@@ -8,22 +8,137 @@
 (defgeneric user-message-input-image-pathnames (input)
   (:documentation "Return the absolute local image pathnames attached to user INPUT."))
 
+(defgeneric user-message-input-file-contexts (input)
+  (:documentation "Return the selected workspace file snapshots attached to user INPUT."))
+
+(defparameter *workspace-file-context-maximum-file-bytes* (* 128 1024)
+  "The maximum exact UTF-8 content snapshot for one workspace file.")
+
+(defparameter *workspace-file-context-maximum-combined-bytes* (* 256 1024)
+  "The maximum combined workspace file content in one user submission.")
+
+(defclass workspace-file-context ()
+  ((path
+    :initarg :path
+    :reader workspace-file-context-path
+    :type non-empty-string
+    :documentation "The workspace-relative path shown in the editor.")
+   (root
+    :initarg :root
+    :reader workspace-file-context-root
+    :type pathname
+    :documentation "The canonical workspace root at selection time.")
+   (pathname
+    :initarg :pathname
+    :reader workspace-file-context-pathname
+    :type pathname
+    :documentation "The canonical selected file pathname at selection time.")
+   (content
+    :initarg :content
+    :reader workspace-file-context-content
+    :type string
+    :documentation "The exact bounded UTF-8 content snapshot.")
+   (byte-count
+    :initarg :byte-count
+    :reader workspace-file-context-byte-count
+    :type (integer 0)
+    :documentation "The UTF-8 size of CONTENT."))
+  (:documentation "One immutable workspace file context snapshot."))
+
+(-> workspace-file-context--utf-8-bytes (string) (integer 0))
+(defun workspace-file-context--utf-8-bytes (content)
+  "Return the number of UTF-8 bytes in CONTENT."
+  (length (sb-ext:string-to-octets content :external-format ':utf-8)))
+
+(-> workspace-file-context-create
+    (&key (:path string) (:root pathname) (:pathname pathname)
+          (:content string))
+    workspace-file-context)
+(defun workspace-file-context-create (&key path root pathname content)
+  "Create one validated immutable workspace file context snapshot."
+  (unless (and (non-empty-string-p path)
+               (not (uiop:absolute-pathname-p (uiop:parse-native-namestring path)))
+               (not (find-if (lambda (character)
+                               (let ((code (char-code character)))
+                                 (or (< code 32) (= code 127))))
+                             path)))
+    (error 'configuration-error
+           :message "A workspace file context requires a safe relative path."))
+  (unless (and (uiop:absolute-pathname-p root)
+               (uiop:absolute-pathname-p pathname)
+               (uiop:subpathp pathname root))
+    (error 'configuration-error
+           :message "A workspace file context pathname must be inside its root."))
+  (let ((byte-count (workspace-file-context--utf-8-bytes content)))
+    (when (> byte-count *workspace-file-context-maximum-file-bytes*)
+      (error 'configuration-error
+             :message
+             (format nil "Workspace file context ~A exceeds the ~:D-byte limit."
+                     path *workspace-file-context-maximum-file-bytes*)))
+    (make-instance 'workspace-file-context
+                   :path (copy-seq path)
+                   :root root
+                   :pathname pathname
+                   :content (copy-seq content)
+                   :byte-count byte-count)))
+
+(-> workspace-file-context-snapshot (pathname string) workspace-file-context)
+(defun workspace-file-context-snapshot (workspace-root relative-path)
+  "Read RELATIVE-PATH below WORKSPACE-ROOT as a bounded stable UTF-8 snapshot."
+  (let* ((root (workspace-tool--canonical-path workspace-root))
+         (relative (uiop:parse-native-namestring relative-path)))
+    (when (uiop:absolute-pathname-p relative)
+      (error 'tool-error
+             :message "Inline file context requires a workspace-relative path."
+             :tool-name "@file"))
+    (let* ((candidate (merge-pathnames relative root))
+           (path (workspace-tool--canonical-path candidate)))
+      (unless (uiop:subpathp path root)
+        (error 'tool-error
+               :message (format nil "Path ~A is outside the workspace." relative-path)
+               :tool-name "@file"))
+      (workspace-file-context-create
+       :path relative-path
+       :root root
+       :pathname path
+       :content
+       (file--read-bounded-utf-8
+        candidate
+        :maximum-bytes *workspace-file-context-maximum-file-bytes*
+        :tool-name "@file"
+        :description "Workspace file"
+        :validation-function
+        (lambda ()
+          (unless (uiop:subpathp (workspace-tool--canonical-path candidate)
+                                 root)
+            (error 'tool-error
+                   :message (format nil "Path ~A is outside the workspace."
+                                    relative-path)
+                   :tool-name "@file"))))))))
+
 (defclass user-message-input ()
   ((text
     :initarg :text
     :reader user-message-input-text
     :type string
-    :documentation "The editable user text, including visible image labels.")
+    :documentation "The editable user text, including visible attachment labels.")
    (image-pathnames
     :initarg :image-pathnames
     :initform nil
     :reader user-message-input-image-pathnames
     :type list
-    :documentation "Absolute local image pathnames attached to this submission."))
-  (:documentation "One user submission containing text and local image attachments."))
+    :documentation "Absolute local image pathnames attached to this submission.")
+   (file-contexts
+    :initarg :file-contexts
+    :initform nil
+    :reader user-message-input-file-contexts
+    :type list
+    :documentation "Immutable selected workspace file content snapshots."))
+  (:documentation "One user submission containing text, images, and file context."))
 
 (-> user-message-input-text ((or string user-message-input)) string)
 (-> user-message-input-image-pathnames ((or string user-message-input)) list)
+(-> user-message-input-file-contexts ((or string user-message-input)) list)
 
 (defmethod user-message-input-text ((input string))
   input)
@@ -31,23 +146,40 @@
 (defmethod user-message-input-image-pathnames ((input string))
   (declare (ignore input)))
 
+(defmethod user-message-input-file-contexts ((input string))
+  (declare (ignore input)))
+
 (-> user-message-input-create
-    (&key (:text string) (:image-pathnames list))
+    (&key (:text string) (:image-pathnames list) (:file-contexts list))
     user-message-input)
-(defun user-message-input-create (&key (text "") image-pathnames)
-  "Create one validated user submission from TEXT and IMAGE-PATHNAMES."
-  (unless (or (non-empty-string-p text) image-pathnames)
+(defun user-message-input-create (&key (text "") image-pathnames file-contexts)
+  "Create one validated user submission from text, images, and file context."
+  (unless (or (non-empty-string-p text) image-pathnames file-contexts)
     (error 'configuration-error
-           :message "A user submission requires text or an image."))
+           :message "A user submission requires text, an image, or file context."))
   (unless (every #'pathnamep image-pathnames)
     (error 'configuration-error
            :message "Every attached image must have an absolute pathname."))
   (unless (every #'uiop:absolute-pathname-p image-pathnames)
     (error 'configuration-error
            :message "Every attached image pathname must be absolute."))
+  (unless (every (lambda (context)
+                   (typep context 'workspace-file-context))
+                 file-contexts)
+    (error 'configuration-error
+           :message "Every attached file context must be a workspace snapshot."))
+  (when (> (reduce #'+ file-contexts
+                   :key #'workspace-file-context-byte-count
+                   :initial-value 0)
+           *workspace-file-context-maximum-combined-bytes*)
+    (error 'configuration-error
+           :message
+           (format nil "Workspace file context exceeds the ~:D-byte combined limit."
+                   *workspace-file-context-maximum-combined-bytes*)))
   (make-instance 'user-message-input
                  :text text
-                 :image-pathnames (copy-list image-pathnames)))
+                 :image-pathnames (copy-list image-pathnames)
+                 :file-contexts (copy-list file-contexts)))
 
 (-> user-message-input-copy ((or string user-message-input))
     (or string user-message-input))
@@ -61,7 +193,9 @@
   (make-instance 'user-message-input
                  :text (copy-seq (user-message-input-text input))
                  :image-pathnames
-                 (copy-list (user-message-input-image-pathnames input))))
+                 (copy-list (user-message-input-image-pathnames input))
+                 :file-contexts
+                 (copy-list (user-message-input-file-contexts input))))
 
 
 ;;;; -- Prepared Attachments --

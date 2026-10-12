@@ -514,7 +514,8 @@ second reports whether shutdown was prepared."
          (user-message-input
           (user-message-input-create
            :text (subseq text 1)
-           :image-pathnames (user-message-input-image-pathnames input)))))
+           :image-pathnames (user-message-input-image-pathnames input)
+           :file-contexts (user-message-input-file-contexts input)))))
       ((or (terminal-ui--lisp-draft-p text)
            (terminal-ui--async-lisp-draft-p text))
        nil)
@@ -637,15 +638,22 @@ lock."
 (defun application-input--pending-form (input)
   "Return a portable durable form for pending user INPUT."
   (etypecase input
-    (string
-     (copy-seq input))
+    (string (copy-seq input))
     (user-message-input
      (list :user-message-input
-           :version 1
+           :version 2
            :text (copy-seq (user-message-input-text input))
            :image-pathnames
-           (mapcar #'namestring
-                   (user-message-input-image-pathnames input))))))
+           (mapcar #'namestring (user-message-input-image-pathnames input))
+           :file-contexts
+           (mapcar
+            (lambda (context)
+              (list :path (workspace-file-context-path context)
+                    :root (namestring (workspace-file-context-root context))
+                    :pathname (namestring
+                               (workspace-file-context-pathname context))
+                    :content (workspace-file-context-content context)))
+            (user-message-input-file-contexts input))))))
 
 (-> application-input--restore-pending-form
     (t)
@@ -653,26 +661,34 @@ lock."
 (defun application-input--restore-pending-form (form)
   "Return validated pending input restored from durable FORM."
   (cond
-    ((stringp form)
-     (copy-seq form))
-    ((and (listp form)
-          (eq (first form) ':user-message-input)
-          (= (or (getf (rest form) :version) 0) 1))
+    ((stringp form) (copy-seq form))
+    ((and (listp form) (eq (first form) ':user-message-input)
+          (member (or (getf (rest form) :version) 0) '(1 2)))
      (let ((text (getf (rest form) :text))
-           (image-names (getf (rest form) :image-pathnames)))
-       (when (and (stringp text)
-                  (listp image-names)
-                  (every #'stringp image-names))
+           (image-names (getf (rest form) :image-pathnames))
+           (context-forms (if (= (getf (rest form) :version) 2)
+                              (getf (rest form) :file-contexts)
+                              nil)))
+       (when (and (stringp text) (listp image-names)
+                  (every #'stringp image-names) (listp context-forms))
          (handler-case
-             (let ((image-pathnames (mapcar #'pathname image-names)))
+             (let ((image-pathnames (mapcar #'pathname image-names))
+                   (contexts
+                     (mapcar
+                      (lambda (entry)
+                        (workspace-file-context-create
+                         :path (getf entry :path)
+                         :root (pathname (getf entry :root))
+                         :pathname (pathname (getf entry :pathname))
+                         :content (getf entry :content)))
+                      context-forms)))
                (when (every #'uiop:absolute-pathname-p image-pathnames)
                  (user-message-input-create
                   :text (copy-seq text)
-                  :image-pathnames image-pathnames)))
-           (error ()
-             nil)))))
-    (t
-     nil)))
+                  :image-pathnames image-pathnames
+                  :file-contexts contexts)))
+           (error () nil)))))
+    (t nil)))
 
 (-> application-input-controller--pending-work-entry-form
     (list)

@@ -189,7 +189,8 @@
                   *prompt-maximum-characters*)))
        (user-message-input-create
         :text (copy-seq text)
-        :image-pathnames image-pathnames)))
+        :image-pathnames image-pathnames
+        :file-contexts (user-message-input-file-contexts content))))
     ((stringp content)
      (let* ((image-pathnames (prompt--image-pathnames images))
             (labels

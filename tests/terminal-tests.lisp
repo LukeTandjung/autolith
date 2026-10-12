@@ -2450,6 +2450,295 @@ Resize tests drive size changes through COLUMNS and LINES."
           (null (recording-terminal-chunks terminal)))
      "a noninteractive terminal emits no window title"))
   nil)
+(-> test-terminal-inline-file-completion () null)
+(defun test-terminal-inline-file-completion ()
+  "Test inline indexed file selection, token rules, and snapshot submission."
+  (let* ((configuration (test-configuration))
+         (root (test-configuration-root configuration))
+         (source (merge-pathnames "src/example file.lisp" root))
+         (queries nil)
+         (terminal (make-instance 'recording-terminal :columns 80))
+         (ui
+           (terminal-ui-create
+            :terminal terminal
+            :workspace-root root
+            :file-completion-function
+            (lambda (query)
+              (push (copy-seq query) queries)
+              (list (list :name "src/example file.lisp"
+                          :value "src/example file.lisp"
+                          :argument nil
+                          :description "workspace file"))))))
+    (unwind-protect
+         (progn
+           (ensure-directories-exist source)
+           (with-open-file (stream source
+                                   :direction ':output
+                                   :if-exists ':supersede
+                                   :external-format ':utf-8)
+             (write-string "(defun example () :exact)" stream))
+           (with-terminal-ui (active-ui ui)
+             (let ((editor (terminal-ui-editor active-ui)))
+               (recording-terminal-reset terminal)
+               (terminal-ui-process-event
+                active-ui '(:insert "inspect @src/ex"))
+               (test-inline-idle active-ui)
+               (test-assert
+                (null (terminal-ui--matching-path-completions
+                       active-ui (line-editor-text editor)
+                       (line-editor-cursor editor)))
+                "snapshot selection suppresses the upstream path-only menu")
+               (test-assert (string= (first queries) "src/ex")
+                            "an inline @ token sends its query to file search")
+               (test-assert
+                (search "src/example file.lisp"
+                        (recording-terminal-output terminal))
+                "inline file matches are painted below the draft")
+               (terminal-ui-process-event active-ui :complete)
+               (test-assert
+                (string= (line-editor-text editor)
+                         "inspect @\"src/example file.lisp\" ")
+                "Tab inserts a quoted workspace-relative file token")
+               (let ((contexts (terminal-ui-file-contexts active-ui)))
+                 (test-assert
+                  (and (= (length contexts) 1)
+                       (string= (workspace-file-context-content
+                                 (first contexts))
+                                "(defun example () :exact)"))
+                  "file selection stores the exact UTF-8 snapshot"))
+               (multiple-value-bind (action payload)
+                   (terminal-ui-process-event active-ui :submit)
+                 (test-assert
+                  (and (eq action :submit)
+                       (typep payload 'user-message-input)
+                       (string= (user-message-input-text payload)
+                                "inspect @\"src/example file.lisp\" ")
+                       (= (length (user-message-input-file-contexts payload)) 1))
+                  "submission keeps concise text and carries selected context"))
+               (let ((count (length queries)))
+                 (terminal-ui-process-event
+                  active-ui '(:insert "mail name@example.com and \\@literal"))
+                 (test-assert (= (length queries) count)
+                              "email and escaped @ text do not start completion"))
+               (terminal-ui-process-event active-ui :interrupt)
+               (line-editor-set-text editor "open @src/ex suffix" :cursor 12)
+               (terminal-ui--refresh-file-completion active-ui)
+               (test-inline-idle active-ui)
+               (terminal-ui-process-event active-ui :complete)
+               (test-assert
+                (string= (line-editor-text editor)
+                         "open @\"src/example file.lisp\"  suffix")
+                "mid-line completion replaces only the query before the cursor")
+               (terminal-ui-process-event active-ui :interrupt))))
+      (uiop:delete-directory-tree root :validate t :if-does-not-exist ':ignore)))
+  nil)
+
+(-> test-inline-file-context-pending-round-trip () null)
+(defun test-inline-file-context-pending-round-trip ()
+  "Test durable queue forms for file snapshots and version 1 image inputs."
+  (let* ((configuration (test-configuration))
+         (root (test-configuration-root configuration))
+         (source (merge-pathnames "queued.txt" root)))
+    (unwind-protect
+         (progn
+           (with-open-file (stream source
+                                   :direction ':output
+                                   :if-exists ':supersede
+                                   :external-format ':utf-8)
+             (write-string "queued exact content" stream))
+           (let* ((context (workspace-file-context-snapshot root "queued.txt"))
+                  (input (user-message-input-create
+                          :text "use @queued.txt"
+                          :file-contexts (list context)))
+                  (form (application-input--pending-form input))
+                  (restored (application-input--restore-pending-form form))
+                  (legacy
+                    (application-input--restore-pending-form
+                     (list :user-message-input :version 1
+                           :text "legacy" :image-pathnames nil))))
+             (test-assert
+              (and (= (getf (rest form) :version) 2)
+                   (typep restored 'user-message-input)
+                   (string= (user-message-input-text restored)
+                            "use @queued.txt")
+                   (string=
+                    (workspace-file-context-content
+                     (first (user-message-input-file-contexts restored)))
+                    "queued exact content"))
+              "version 2 pending input preserves the selected snapshot")
+             (test-assert
+              (and (typep legacy 'user-message-input)
+                   (string= (user-message-input-text legacy) "legacy")
+                   (null (user-message-input-file-contexts legacy)))
+              "version 1 pending rich input remains readable")))
+      (uiop:delete-directory-tree root :validate t :if-does-not-exist ':ignore)))
+  nil)
+
+(defun test-inline-wait (predicate)
+  "Wait for a completion worker with a bounded test deadline."
+  (loop repeat 500 when (funcall predicate) return t do (sleep 0.01)
+        finally (error "Timed out waiting for inline completion.")))
+(defun test-inline-idle (ui)
+  (test-inline-wait (lambda () (with-terminal-ui-locked (ui)
+                                (not (terminal-ui-file-completion-running-p ui))))))
+(defun test-inline-entry (path)
+  (list :name path :value path :argument nil :description "workspace file"))
+(defun test-inline-async-lifecycle ()
+  "Test coalescing, stale results, dismissal, and shutdown with a blocked provider."
+  (let* ((started (sb-thread:make-semaphore))
+         (release (sb-thread:make-semaphore))
+         (queries nil)
+         (terminal (make-instance 'recording-terminal :columns 80))
+         (ui (terminal-ui-create
+              :terminal terminal :workspace-root #P"/tmp/"
+              :file-completion-function
+              (lambda (query)
+                (push query queries)
+                (when (member query '("a" "stop") :test #'string=)
+                  (sb-thread:signal-semaphore started)
+                  (unless (sb-thread:wait-on-semaphore release :timeout 5)
+                    (error "Test provider release timed out.")))
+                (list (test-inline-entry query))))))
+    (unwind-protect
+         (with-terminal-ui (active-ui ui)
+           (terminal-ui-process-event active-ui '(:insert "@a"))
+           (test-assert (sb-thread:wait-on-semaphore started :timeout 5)
+                        "file search runs off the input thread")
+           (terminal-ui-process-event active-ui '(:insert "b"))
+           (terminal-ui-process-event active-ui '(:insert "c"))
+           (sb-thread:signal-semaphore release)
+           (test-inline-idle active-ui)
+           (test-assert (equal (reverse queries) '("a" "abc"))
+                        "one worker coalesces intermediate queries")
+           (test-assert
+            (string= (getf (first (selector-items
+                                  (terminal-ui-file-completion-selector active-ui))) :value)
+                     "abc")
+            "stale search results cannot replace the current query")
+           (terminal-ui-process-event active-ui :escape)
+           (terminal-ui--refresh-file-completion active-ui)
+           (test-inline-idle active-ui)
+           (test-assert (and (= (length queries) 2)
+                             (null (selector-items
+                                    (terminal-ui-file-completion-selector active-ui))))
+                        "Escape dismisses without restarting the same query")
+           (terminal-ui-set-input active-ui "@stop")
+           (terminal-ui--refresh-file-completion active-ui)
+           (test-assert (sb-thread:wait-on-semaphore started :timeout 5)
+                        "shutdown test search started")
+           (terminal-ui-stop active-ui)
+           (let ((output (recording-terminal-output terminal)))
+             (sb-thread:signal-semaphore release)
+             (test-inline-idle active-ui)
+             (test-assert (and (null (selector-items
+                                     (terminal-ui-file-completion-selector active-ui)))
+                               (string= output (recording-terminal-output terminal)))
+                          "a late search cannot install or paint after shutdown")))
+      (sb-thread:signal-semaphore release)
+      (terminal-ui-stop ui)))
+  nil)
+(defun test-inline-history-snapshots ()
+  "Test identical tokens, duplicate history text, and saved draft attachments."
+  (let* ((terminal (make-instance 'recording-terminal :columns 80))
+         (ui (terminal-ui-create :terminal terminal))
+         (first (workspace-file-context-create :path "file" :root #P"/tmp/"
+                                               :pathname #P"/tmp/file" :content "first"))
+         (second (workspace-file-context-create :path "file" :root #P"/tmp/"
+                                                :pathname #P"/tmp/file" :content "second")))
+    (with-terminal-ui (active-ui ui)
+      (flet ((submit (text context)
+               (terminal-ui-set-input active-ui
+                 (user-message-input-create :text text :file-contexts (list context)))
+               (terminal-ui-process-event active-ui :submit))
+             (current-content ()
+               (workspace-file-context-content (first (terminal-ui-file-contexts active-ui)))))
+        (submit "same @file" first)
+        (submit "other @file" second)
+        (submit "same @file" second)
+        (terminal-ui-process-event active-ui :history-previous)
+        (test-assert (string= (current-content) "second") "latest snapshot restored")
+        (terminal-ui-process-event active-ui :history-previous)
+        (terminal-ui-process-event active-ui :history-previous)
+        (test-assert (string= (current-content) "first")
+                     "duplicate text and identical tokens restore their own history snapshot")
+        (terminal-ui-set-input active-ui
+          (user-message-input-create :text "@file" :file-contexts (list first)))
+        (terminal-ui-process-event active-ui :history-previous)
+        (test-assert (string= (current-content) "second") "history replaces draft metadata")
+        (terminal-ui-process-event active-ui :history-next)
+        (test-assert (string= (current-content) "first") "history restores saved draft metadata"))))
+  nil)
+(defun test-inline-file-bounds ()
+  "Test UTF-8 byte limits, regular files, symlinks, and root confinement."
+  (let* ((configuration (test-configuration))
+         (root (test-configuration-root configuration))
+         (outside (merge-pathnames "outside" root))
+         (workspace (merge-pathnames "workspace/" root))
+         (file (merge-pathnames "utf8" workspace)))
+    (unwind-protect
+         (progn
+           (ensure-directories-exist file)
+           (with-open-file (s outside :direction ':output) (write-string "outside" s))
+           (with-open-file (s file :direction ':output :external-format ':utf-8)
+             (write-string "éé" s))
+           (sb-posix:symlink (namestring outside) (namestring (merge-pathnames "escape" workspace)))
+           (sb-posix:mkfifo (namestring (merge-pathnames "fifo" workspace)) #o600)
+           (flet ((rejected-p (path)
+                    (handler-case (progn (workspace-file-context-snapshot workspace path) nil)
+                      (error () t))))
+             (test-assert (every #'rejected-p '("../outside" "escape" "fifo" "/etc/passwd"))
+                          "outside paths, escaping symlinks and FIFOs are rejected")
+             (let ((*workspace-file-context-maximum-file-bytes* 3))
+               (test-assert (rejected-p "utf8") "per-file limit counts UTF-8 bytes"))
+             (let* ((context (workspace-file-context-snapshot workspace "utf8"))
+                    (*workspace-file-context-maximum-combined-bytes* 7))
+               (test-assert
+                (handler-case
+                    (progn (user-message-input-create :text "files" :file-contexts (list context context)) nil)
+                  (configuration-error () t))
+                "combined attachment size is enforced independently of the UI"))))
+      (uiop:delete-directory-tree root :validate t :if-does-not-exist ':ignore)))
+  nil)
+
+
+(defun test-inline-search-protocol
+       (
+        &optional
+        (script
+         (merge-pathnames "bin/autolith-search-worker"
+                          (asdf/system:system-source-directory :autolith))))
+  "Exercise exact completion paths through the real isolated native worker."
+  (let* ((configuration (test-configuration))
+         (root (test-configuration-root configuration))
+         (configuration
+          (configuration-copy configuration :working-directory root))
+         (name "needle [git:clean].txt")
+         (worker
+          (make-worker :command
+                       (list (or (uiop/os:getenv "AUTOLITH_SBCL") "sbcl")
+                             "--noinform" "--script" (namestring script)))))
+    (unwind-protect
+        (progn
+         (with-open-file
+             (stream
+              (merge-pathnames (uiop/filesystem:parse-native-namestring name)
+                               root)
+              :direction ':output)
+           (write-string "exact content" stream))
+         (let ((paths (search-worker-file-paths worker configuration "needle")))
+           (test-assert (equal paths (list name))
+                        "completion receives raw indexed paths, not decorated search output")
+           (test-assert
+            (string=
+             (workspace-file-context-content
+              (workspace-file-context-snapshot root (first paths)))
+             "exact content")
+            "native filename syntax survives completion and snapshotting")))
+      (worker-close worker)
+      (uiop/filesystem:delete-directory-tree root :validate t
+                                             :if-does-not-exist ':ignore)))
+  nil)
+
 
 (-> test-terminal-status-worked-time () null)
 (defun test-terminal-status-worked-time ()
@@ -2501,6 +2790,100 @@ Resize tests drive size changes through COLUMNS and LINES."
                 (second (uiop:split-string text :separator '(#\Newline)))))
           (test-assert (not (search "worked" status-row))
                        "a narrow status row drops the worked segment first")))))
+  nil)
+
+(defun test-inline-runtime-rebinding ()
+  "Drain an old provider before replacing its runtime and select from the new root."
+  (let* ((configuration (test-configuration))
+         (root (test-configuration-root configuration))
+         (next-root (merge-pathnames "next/" root))
+         (registry (make-default-tool-registry))
+         (next-registry (make-default-tool-registry))
+         (ui (terminal-ui-create :terminal (make-instance 'recording-terminal)))
+         (application (make-instance 'application :configuration configuration
+                                    :tool-registry registry :ui ui))
+         (started (sb-thread:make-semaphore))
+         (release (sb-thread:make-semaphore))
+         (drained (sb-thread:make-semaphore))
+         (drainer nil))
+    (unwind-protect
+         (progn
+           (ensure-directories-exist next-root)
+           (with-open-file (stream (merge-pathnames "new.txt" next-root)
+                                   :direction :output)
+             (write-string "new workspace" stream))
+           (application--connect-file-completion application)
+           (with-terminal-ui (active-ui ui)
+             (setf (terminal-ui-file-completion-function active-ui)
+                   (lambda (query)
+                     (declare (ignore query))
+                     (sb-thread:signal-semaphore started)
+                     (unless (sb-thread:wait-on-semaphore release :timeout 5)
+                       (error "Provider release timed out."))
+                     (list (test-inline-entry "old.txt"))))
+             (terminal-ui-process-event active-ui '(:insert "@old"))
+             (test-assert (sb-thread:wait-on-semaphore started :timeout 5)
+                          "the old runtime has an in-flight search")
+             (setf drainer
+                   (sb-thread:make-thread
+                    (lambda ()
+                      (terminal-ui--quiesce-file-completion active-ui)
+                      (sb-thread:signal-semaphore drained))))
+             (test-inline-wait
+              (lambda () (with-terminal-ui-locked (active-ui)
+                           (null (terminal-ui-file-completion-function active-ui)))))
+             (test-assert (not (sb-thread:try-semaphore drained))
+                          "runtime retirement waits for the active provider")
+             (sb-thread:signal-semaphore release)
+             (test-assert (sb-thread:wait-on-semaphore drained :timeout 5)
+                          "the runtime drains without holding the presentation lock")
+             (sb-thread:join-thread drainer)
+             (setf drainer nil)
+             (test-assert (null (selector-items
+                                (terminal-ui-file-completion-selector active-ui)))
+                          "the retired provider cannot publish a result")
+             (setf (application-configuration application)
+                   (configuration-copy configuration :working-directory next-root)
+                   (application-tool-registry application) next-registry)
+             (application--connect-file-completion application)
+             (test-call-with-function-replacements
+              (list (list 'search-worker-file-paths
+                          (lambda (engine config query &key maximum-results)
+                            (declare (ignore query maximum-results))
+                            (test-assert
+                             (eq engine (search-tool-engine
+                                         (tool-registry-find next-registry "search" "files")))
+                             "completion uses the replacement engine")
+                            (test-assert
+                             (uiop:pathname-equal (config :working-directory config)
+                                                  next-root)
+                             "completion uses the replacement configuration")
+                            (list "new.txt"))))
+              (lambda ()
+                (terminal-ui-set-input active-ui "@new")
+                (terminal-ui--refresh-file-completion active-ui)
+                (test-inline-idle active-ui)
+                (terminal-ui-process-event active-ui :complete)
+                (test-assert
+                 (string= (workspace-file-context-content
+                           (first (terminal-ui-file-contexts active-ui)))
+                          "new workspace")
+                 "selection reads the new workspace, not the startup root")))
+             (line-editor-set-text (terminal-ui-editor active-ui) "plain text")
+             (multiple-value-bind (action payload)
+                 (terminal-ui-process-event active-ui :submit)
+               (declare (ignore action))
+               (test-assert (null (user-message-input-file-contexts payload))
+                            "submission removes snapshots whose tokens were deleted"))
+             (terminal-ui-process-event active-ui :history-previous)
+             (test-assert (null (terminal-ui-file-contexts active-ui))
+                          "history records the pruned submission, not hidden snapshots")))
+      (sb-thread:signal-semaphore release)
+      (when drainer (sb-thread:join-thread drainer))
+      (terminal-ui-stop ui)
+      (tool-registry-close-runtime-state registry)
+      (tool-registry-close-runtime-state next-registry)
+      (uiop:delete-directory-tree root :validate t :if-does-not-exist :ignore)))
   nil)
 
 

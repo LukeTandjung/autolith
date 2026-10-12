@@ -257,6 +257,8 @@
   test-conversation-identifier-migration-resumption)
 
 (define-test-suite conversation
+  test-conversation-workspace-file-context
+  test-conversation-file-only-replay
   test-conversation-image-input
   test-conversation-inherited-reference
   test-conversation-ephemeral-tool-projection
@@ -778,6 +780,13 @@
   test-terminal-command-activities
   test-terminal-stream-update
   test-terminal-command-completion
+  test-terminal-inline-file-completion
+  test-inline-async-lifecycle
+  test-inline-history-snapshots
+  test-inline-runtime-rebinding
+  test-inline-file-bounds
+  test-inline-search-protocol
+  test-inline-file-context-pending-round-trip
   test-terminal-lisp-operation-completion
   test-terminal-path-completion
   test-terminal-path-completion-history

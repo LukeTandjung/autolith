@@ -22,4 +22,22 @@
     (load quicklisp-setup)
     (uiop:symbol-call '#:ql '#:quickload :cffi :silent t)
     (asdf:load-system :clifff))
-  (uiop:symbol-call '#:clifff '#:worker-main protocol-output))
+  ;; clifff's :files operation renders decorated text. Inline completion needs
+  ;; exact paths, including spaces and brackets. Extend only this child process.
+  (let* ((dispatch (find-symbol "WORKER--DISPATCH" "CLIFFF"))
+         (original (symbol-function dispatch)))
+    (setf (symbol-function dispatch)
+          (lambda (engine request)
+            (if (eq (getf (rest request) :operation) :file-paths)
+                (let* ((arguments (getf (rest request) :arguments))
+                       (result (apply #'uiop:symbol-call
+                                      '#:clifff '#:engine-search-files
+                                      engine arguments)))
+                  (with-standard-io-syntax
+                    (write-to-string
+                     (mapcar (lambda (item) (getf item :path))
+                             (getf result :items)))))
+                (funcall original engine request))))
+    (unwind-protect
+         (uiop:symbol-call '#:clifff '#:worker-main protocol-output)
+      (setf (symbol-function dispatch) original))))

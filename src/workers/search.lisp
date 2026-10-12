@@ -219,3 +219,29 @@ was built from and may no longer exist."
                                         (search-tool--fff-constraints constraints))
                                        :mode mode)
                                  (search-tool--common-content-options arguments))))))))
+
+
+(-> search-worker-file-paths
+    (worker configuration string &key (:maximum-results (integer 1))) list)
+(defun search-worker-file-paths
+       (worker configuration query &key (maximum-results 20))
+  "Return exact indexed paths from the child-only structured completion operation."
+  (let ((text
+         (search-worker-request worker configuration :operation ':file-paths
+                                :arguments
+                                (list query :glob-p nil :page 0 :page-size
+                                      maximum-results))))
+    (with-standard-io-syntax
+     (let ((*read-eval* nil))
+       (multiple-value-bind (paths end)
+           (read-from-string text nil :eof)
+         (unless
+             (and (listp paths) (every #'stringp paths)
+                  (every
+                   (lambda (c) (find c '(#\Space #\Tab #\Newline #\Return)))
+                   (subseq text end)))
+           (error 'search-error :message
+                  "Invalid structured file completion response." :operation
+                  ':files :pathname
+                  (config :working-directory configuration) :cause nil))
+         paths)))))

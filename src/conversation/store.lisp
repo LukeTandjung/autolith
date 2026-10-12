@@ -1755,6 +1755,26 @@ copied."
       (delete-file (image-attachment-pathname attachment))))
   nil)
 
+(-> workspace-file-context-provider-content (string list) string)
+(defun workspace-file-context-provider-content (content contexts)
+  "Return visible CONTENT plus JSON-encoded workspace file snapshots."
+  (if (null contexts)
+      content
+      (format nil
+              "~A~%~%Autolith workspace file context (JSON data):~%~A"
+              content
+              (json-encode
+               (json-object
+                "files"
+                (coerce
+                 (mapcar
+                  (lambda (context)
+                    (json-object
+                     "path" (workspace-file-context-path context)
+                     "content" (workspace-file-context-content context)))
+                  contexts)
+                 'vector))))))
+
 (-> conversation-append-user-message
     (conversation (or string user-message-input)
      &key (:pending-input-identifier (option non-empty-string))
@@ -1774,11 +1794,13 @@ transcript show automatic INPUT as a short notice."
     (error 'configuration-error
            :message "A user submission requires text or an image."))
   (let* ((content (user-message-input-text input))
+         (contexts (user-message-input-file-contexts input))
+         (provider-content
+           (workspace-file-context-provider-content content contexts))
          (attachments
            (conversation--prepare-images
-            conversation
-            (user-message-input-image-pathnames input)))
-         (item (user-message-item content attachments)))
+            conversation (user-message-input-image-pathnames input)))
+         (item (user-message-item provider-content attachments)))
     (with-recursive-lock-held ((conversation-append-lock conversation))
       (let* ((initial-title
                (and (not automatic-p)
@@ -1801,11 +1823,10 @@ transcript show automatic INPUT as a short notice."
                      (conversation-append-record
                       conversation
                       (append
-                       (list :message
-                             :role :user
-                             :content content)
-                       (when automatic-p
-                         (list :automatic-p t))
+                       (list :message :role :user :content content)
+                       (when contexts
+                         (list :context-content provider-content))
+                       (when automatic-p (list :automatic-p t))
                        (when pending-input-identifier
                          (list :pending-input-identifier
                                (copy-seq pending-input-identifier)))
@@ -2541,7 +2562,13 @@ later picker searches read it without scanning the log."
 (defmethod conversation--project-record
     ((kind (eql :message)) conversation properties)
   (let ((content (getf properties :content))
+        (context-content (getf properties :context-content))
         (images (getf properties :images)))
+    (when (and (conversation--property-present-p properties :context-content)
+               (not (stringp context-content)))
+      (conversation--record-error
+       conversation properties
+       "A persisted message has invalid file context content."))
     (when (and (null (conversation-title conversation))
                (= (conversation-user-turn-count conversation) 1)
                (eq (getf properties :role) ':user)
@@ -2558,7 +2585,7 @@ later picker searches read it without scanning the log."
            conversation properties
            "A persisted image message has invalid text content."))
         (conversation--append-input-item
-         conversation (user-message-item content attachments))))))
+         conversation (user-message-item (or context-content content) attachments))))))
 
 (defmethod conversation--project-record
     ((kind (eql :title)) conversation properties)

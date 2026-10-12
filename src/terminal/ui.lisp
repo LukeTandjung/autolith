@@ -142,12 +142,15 @@ offered only while the typed prefix no longer matches its primary."
           (:completion-root (option pathname))
           (:path-search-function (option function))
           (:message-header-prefixes list)
+          (:file-completion-function (option function))
+          (:workspace-root (option pathname))
           (:clock-function function))
     terminal-ui)
 (defun terminal-ui-create
     (&key terminal editor (prompt "> ") (placeholder "") completions
           completion-function completion-root path-search-function fullscreen-p
           message-header-prefixes
+          file-completion-function workspace-root
           (clock-function #'terminal-ui--monotonic-seconds))
   "Create an inline or opt-in fullscreen UI for interactive TERMINAL.
 
@@ -184,6 +187,16 @@ jumps between as messages."
            :message "The path search provider must be a function or NIL."
            :operation ':create-ui
            :cause nil))
+  (unless (typep file-completion-function '(option function))
+    (error 'terminal-error
+           :message "The file completion provider must be a function or NIL."
+           :operation ':create-ui
+           :cause nil))
+  (unless (typep workspace-root '(option pathname))
+    (error 'terminal-error
+           :message "The file completion workspace root must be a pathname or NIL."
+           :operation ':create-ui
+           :cause nil))
   (let ((live-region
           (make-live-region
            :columns (terminal-columns terminal)
@@ -213,8 +226,13 @@ jumps between as messages."
                    :completion-selector
                    (make-selector
                     :visible-count *terminal-ui-visible-completions*
+                    :arrangement ':vertical)
+                   :file-completion-function file-completion-function
+                   :workspace-root workspace-root
+                   :file-completion-selector
+                   (make-selector
+                    :visible-count *terminal-ui-visible-completions*
                     :arrangement ':vertical))))
-
 
 (defmacro with-terminal-ui-locked ((ui) &body body)
   "Run BODY while holding UI's recursive presentation lock."
@@ -290,7 +308,8 @@ emergency terminal input responsive while another thread owns presentation."
 (-> terminal-ui--submission-input (terminal-ui string)
     (or string user-message-input))
 (defun terminal-ui--submission-input (ui text)
-  "Return TEXT with only its surviving, consecutively labelled attachments."
+  "Return TEXT with its surviving image and selected file attachments."
+  (terminal-ui--prune-file-contexts ui text)
   (let* ((attachments
            (remove-if-not
             (lambda (attachment)
@@ -301,48 +320,64 @@ emergency terminal input responsive while another thread owns presentation."
                  for number from 1
                  collect (cons (first attachment)
                                (terminal-ui--image-label number))))
-         (normalized-text (terminal-ui--replace-image-labels text mapping)))
-    (if attachments
+         (normalized-text (terminal-ui--replace-image-labels text mapping))
+         (contexts (copy-list (terminal-ui-file-contexts ui))))
+    (if (or attachments contexts)
         (user-message-input-create
          :text normalized-text
-         :image-pathnames (mapcar #'rest attachments))
+         :image-pathnames (mapcar #'rest attachments)
+         :file-contexts contexts)
         normalized-text)))
 
-(-> terminal-ui--remember-image-submission (terminal-ui string list) null)
-(defun terminal-ui--remember-image-submission (ui text attachments)
-  "Remember submitted TEXT and ATTACHMENTS for Clinedi history recall."
-  (when attachments
-    (push (list :text (copy-seq text)
-                :attachments
-                (terminal-ui--copy-image-attachments attachments))
-          (terminal-ui-image-history ui))
-    (when (> (length (terminal-ui-image-history ui))
-             *terminal-history-limit*)
+(-> terminal-ui--remember-image-submission
+    (terminal-ui string list list) null)
+
+
+(defun terminal-ui--remember-image-submission (ui text attachments contexts)
+  "Remember attachments by the exact Clinedi history entry, not matching text."
+  (let* ((history (slot-value (terminal-ui-editor ui) 'clinedi::history))
+         (entry
+          (and (plusp (length history)) (aref history (1- (length history))))))
+    (when (and entry (string= text entry))
       (setf (terminal-ui-image-history ui)
-            (subseq (terminal-ui-image-history ui)
-                    0 *terminal-history-limit*))))
+              (remove-if
+               (lambda (record)
+                 (or (eq entry (getf record :entry))
+                     (not (find (getf record :entry) history :test #'eq))))
+               (terminal-ui-image-history ui)))
+      (push
+       (list :entry entry :attachments
+             (terminal-ui--copy-image-attachments attachments) :file-contexts
+             (copy-list contexts))
+       (terminal-ui-image-history ui))))
   nil)
 
 (-> terminal-ui--restore-history-images (terminal-ui) null)
+
+
 (defun terminal-ui--restore-history-images (ui)
-  "Restore or prune image attachments for UI's current editor text."
-  (let ((text (line-editor-text (terminal-ui-editor ui))))
-    (if (terminal-ui-image-attachments ui)
-        (setf (terminal-ui-image-attachments ui)
-              (remove-if-not
-               (lambda (attachment)
-                 (search (first attachment) text))
-               (terminal-ui-image-attachments ui)))
-        (let ((record
-                (find text
-                      (terminal-ui-image-history ui)
-                      :key (lambda (entry) (getf entry :text))
-                      :test #'string=)))
-          (when record
-            (setf (terminal-ui-image-attachments ui)
+  "Replace attachment metadata when history selects a different entry."
+  (let* ((editor (terminal-ui-editor ui)) (text (line-editor-text editor)))
+    (if (terminal-ui--editor-history-navigating-p editor)
+        (let* ((entry
+                (aref (slot-value editor 'clinedi::history)
+                      (slot-value editor 'clinedi::history-index)))
+               (record
+                (find entry (terminal-ui-image-history ui) :key
+                      (lambda (record) (getf record :entry)) :test #'eq)))
+          (setf (terminal-ui-image-attachments ui)
                   (terminal-ui--copy-image-attachments
-                   (getf record :attachments)))))))
+                   (getf record :attachments))
+                (terminal-ui-file-contexts ui)
+                  (copy-list (getf record :file-contexts))))
+        (progn
+         (setf (terminal-ui-image-attachments ui)
+                 (remove-if-not
+                  (lambda (attachment) (search (first attachment) text))
+                  (terminal-ui-image-attachments ui)))
+         (terminal-ui--prune-file-contexts ui text))))
   nil)
+
 
 (-> terminal-ui--attach-pasted-image (terminal-ui string) boolean)
 (defun terminal-ui--attach-pasted-image (ui pasted-text)
@@ -369,7 +404,10 @@ emergency terminal input responsive while another thread owns presentation."
   (setf (terminal-ui-image-attachments ui)
         (loop for pathname in (user-message-input-image-pathnames input)
               for number from 1
-              collect (cons (terminal-ui--image-label number) pathname)))
+              collect (cons (terminal-ui--image-label number) pathname))
+        (terminal-ui-file-contexts ui)
+        (copy-list (user-message-input-file-contexts input)))
+  (terminal-ui--clear-file-completion ui)
   (line-editor-set-text
    (terminal-ui-editor ui)
    (sanitize-text (user-message-input-text input)))
@@ -618,7 +656,10 @@ the draft is exact."
   "Return workspace path completions for the token at CURSOR in TEXT."
   (multiple-value-bind (start end token)
       (terminal-path-token text cursor)
-    (when (and token (terminal-path-token-p token))
+    ;; Snapshot completion owns @ tokens when the application installs it.
+    ;; Keep native path-only completion for standalone UIs.
+    (when (and (not (terminal-ui-file-completion-function ui))
+               token (terminal-path-token-p token))
       (terminal-path-completion-entries
        (terminal-ui--completion-root ui)
        token
@@ -746,6 +787,276 @@ the visible rows."
                     (terminal-path-token (line-editor-text editor)
                                          (line-editor-cursor editor)))
          t)))
+;;;; -- Inline Workspace File Completion --
+
+(-> terminal-ui--file-token (string) string)
+(defun terminal-ui--file-token (path)
+  "Return the concise editor token for workspace-relative PATH."
+  (if (find-if (lambda (character)
+                 (find character '(#\Space #\Tab #\" #\\) :test #'char=))
+               path)
+      (format nil "@\"~A\""
+              (with-output-to-string (stream)
+                (loop for character across path
+                      do (when (find character '(#\\ #\") :test #'char=)
+                           (write-char #\\ stream))
+                         (write-char character stream))))
+      (concatenate 'string "@" path)))
+
+(-> terminal-ui--file-query-range (terminal-ui)
+    (values (option integer) (option integer) (option string)))
+(defun terminal-ui--file-query-range (ui)
+  "Return the active unescaped @ query range at the editor cursor."
+  (let* ((editor (terminal-ui-editor ui))
+         (text (line-editor-text editor))
+         (cursor (line-editor-cursor editor))
+         (start (position-if (lambda (character)
+                               (find character '(#\Space #\Tab #\Newline #\Return)
+                                     :test #'char=))
+                             text :end cursor :from-end t)))
+    (setf start (if start (1+ start) 0))
+    (if (and (< start cursor)
+             (char= (char text start) #\@)
+             (not (and (< (1+ start) cursor)
+                       (char= (char text (1+ start)) #\")))
+             (or (zerop start)
+                 (find (char text (1- start))
+                       '(#\Space #\Tab #\Newline #\Return)
+                       :test #'char=))
+             (not (find-if (lambda (character)
+                             (find character '(#\Space #\Tab #\Newline #\Return)
+                                   :test #'char=))
+                           text :start (1+ start) :end cursor)))
+        (values start cursor (subseq text (1+ start) cursor))
+        (values nil nil nil))))
+
+(-> terminal-ui--file-token-present-p (string string) boolean)
+(defun terminal-ui--file-token-present-p (text token)
+  "Return true when TOKEN occurs as one complete whitespace-delimited token."
+  (labels ((boundary-p (position)
+             (or (= position (length text))
+                 (find (char text position)
+                       '(#\Space #\Tab #\Newline #\Return)
+                       :test #'char=))))
+    (loop for start = (search token text)
+            then (search token text :start2 (1+ start))
+          while start
+          thereis (and (or (zerop start) (boundary-p (1- start)))
+                       (boundary-p (+ start (length token))) t))))
+
+(-> terminal-ui--prune-file-contexts (terminal-ui &optional string) null)
+(defun terminal-ui--prune-file-contexts (ui &optional submitted-text)
+  "Discard selected snapshots whose exact visible token left the draft."
+  (let ((text (or submitted-text
+                  (line-editor-text (terminal-ui-editor ui)))))
+    (setf (terminal-ui-file-contexts ui)
+          (remove-if-not
+           (lambda (context)
+             (terminal-ui--file-token-present-p
+              text
+              (terminal-ui--file-token
+               (workspace-file-context-path context))))
+           (terminal-ui-file-contexts ui))))
+  nil)
+
+(-> terminal-ui--clear-file-completion (terminal-ui) null)
+(defun terminal-ui--clear-file-completion (ui)
+  "Clear inline file completion state without changing the editor."
+  (setf (terminal-ui-file-completion-start ui) nil
+        (terminal-ui-file-completion-end ui) nil
+        (terminal-ui-file-completion-query ui) nil
+        (terminal-ui-file-completion-pending ui) nil)
+  (incf (terminal-ui-file-completion-generation ui))
+  (selector-set-items (terminal-ui-file-completion-selector ui) nil)
+  nil)
+
+(-> terminal-ui--file-completion-current-p
+    (terminal-ui integer integer string integer)
+    boolean)
+(defun terminal-ui--file-completion-current-p (ui start end query generation)
+  "Return true when one file search request still describes the active query."
+  (multiple-value-bind (current-start current-end current-query)
+      (terminal-ui--file-query-range ui)
+    (and (terminal-ui-started-p ui)
+         (= generation (terminal-ui-file-completion-generation ui))
+         (eql start current-start)
+         (eql end current-end)
+         (string= query current-query))))
+
+(-> terminal-ui--refresh-file-completion (terminal-ui) list)
+
+
+(defun terminal-ui--refresh-file-completion (ui)
+  "Queue the latest indexed file query without blocking terminal input."
+  (with-terminal-ui-locked (ui)
+    (multiple-value-bind (start end query)
+        (terminal-ui--file-query-range ui)
+      (let ((provider
+             (and (terminal-ui-started-p ui) start
+                  (terminal-ui-workspace-root ui)
+                  (terminal-ui-file-completion-function ui))))
+        (cond ((not provider) (terminal-ui--clear-file-completion ui))
+              ((and (eql start (terminal-ui-file-completion-start ui))
+                    (eql end (terminal-ui-file-completion-end ui))
+                    (equal query (terminal-ui-file-completion-query ui)))
+               nil)
+              (t
+               (setf (terminal-ui-file-completion-start ui) start
+                     (terminal-ui-file-completion-end ui) end
+                     (terminal-ui-file-completion-query ui) (copy-seq query)
+                     (terminal-ui-file-completion-pending ui)
+                       (list start end (copy-seq query)
+                             (incf (terminal-ui-file-completion-generation ui))
+                             provider))
+               (selector-set-items (terminal-ui-file-completion-selector ui)
+                                   nil)
+               (unless (terminal-ui-file-completion-running-p ui)
+                 (setf (terminal-ui-file-completion-running-p ui) t)
+                 (handler-case
+                  (make-thread
+                   (lambda () (terminal-ui--file-completion-worker ui)) :name
+                   "Autolith inline file completion")
+                  (error (condition)
+                         (setf (terminal-ui-file-completion-running-p ui) nil)
+                         (terminal-ui--clear-file-completion ui)
+                         (error condition)))))))))
+  nil)
+
+
+(-> terminal-ui--file-completion-worker (terminal-ui) null)
+(defun terminal-ui--file-completion-worker (ui)
+  "Drain coalesced queries in one worker; discard stale or stopped results."
+  (loop
+   (let ((request
+          (with-terminal-ui-locked (ui)
+            (let ((pending (terminal-ui-file-completion-pending ui)))
+              (setf (terminal-ui-file-completion-pending ui) nil)
+              (unless pending
+                (setf (terminal-ui-file-completion-running-p ui) nil))
+              pending))))
+     (unless request (return nil))
+     (destructuring-bind
+         (start end query generation provider)
+         request
+       (handler-case
+        (let ((entries (funcall provider query)))
+           (unless (and (listp entries)
+                        (every (lambda (entry)
+                                 (and (terminal-completion-p entry)
+                                      (non-empty-string-p (getf entry :value))
+                                      (not (uiop:absolute-pathname-p
+                                            (uiop:parse-native-namestring
+                                             (getf entry :value))))))
+                               entries))
+            (error 'terminal-error :message "Invalid file completion entries."
+                   :operation ':complete :cause nil))
+          (with-terminal-ui-locked (ui)
+            (when
+                (terminal-ui--file-completion-current-p ui start end query
+                 generation)
+              (selector-set-items (terminal-ui-file-completion-selector ui)
+                                  entries)
+              (terminal-ui--repaint-live ui))))
+        (error (condition)
+               (with-terminal-ui-locked (ui)
+                 (when
+                     (terminal-ui--file-completion-current-p ui start end query
+                      generation)
+                   (setf (terminal-ui-notice ui)
+                           (format nil "File search failed: ~A" condition)
+                         (terminal-ui-notice-deadline ui)
+                           (+ (funcall (terminal-ui-clock-function ui))
+                              4))))))))))
+(-> terminal-ui--file-completion-rows (terminal-ui integer) list)
+(defun terminal-ui--file-completion-rows (ui row-width)
+  "Return styled rows for active inline file matches."
+  (terminal-ui--choice-rows (terminal-ui-file-completion-selector ui)
+                            row-width))
+
+(-> terminal-ui--accept-file-completion (terminal-ui list) boolean)
+(defun terminal-ui--accept-file-completion (ui entry)
+  "Snapshot ENTRY and replace only the active @ query."
+  (let ((start (terminal-ui-file-completion-start ui))
+        (end (terminal-ui-file-completion-end ui)))
+    (when (and start end)
+      (handler-case
+          (let* ((path (getf entry :value))
+                 (context
+                   (workspace-file-context-snapshot
+                    (terminal-ui-workspace-root ui) path))
+                 (existing
+                   (find path (terminal-ui-file-contexts ui)
+                         :key #'workspace-file-context-path :test #'string=))
+                 (contexts
+                   (if existing
+                       (substitute context existing (terminal-ui-file-contexts ui))
+                       (append (terminal-ui-file-contexts ui)
+                               (list context))))
+                 (combined
+                   (reduce #'+ contexts
+                           :key #'workspace-file-context-byte-count
+                           :initial-value 0)))
+            (when (> combined *workspace-file-context-maximum-combined-bytes*)
+              (error 'configuration-error
+                     :message
+                     (format nil "Workspace file context exceeds the ~:D-byte combined limit."
+                             *workspace-file-context-maximum-combined-bytes*)))
+            (let* ((editor (terminal-ui-editor ui))
+                   (text (line-editor-text editor))
+                   (token (terminal-ui--file-token path))
+                   (replacement (concatenate 'string token " ")))
+              (line-editor-set-text
+               editor
+               (concatenate 'string (subseq text 0 start) replacement
+                            (subseq text end))
+               :cursor (+ start (length replacement)))
+              (setf (terminal-ui-file-contexts ui) contexts)
+              (terminal-ui--clear-file-completion ui)
+              t))
+        (error (condition)
+          (terminal-ui--clear-file-completion ui)
+          (setf (terminal-ui-notice ui) (princ-to-string condition)
+                (terminal-ui-notice-deadline ui)
+                (+ (funcall (terminal-ui-clock-function ui)) 4))
+          nil)))))
+
+(-> terminal-ui--handle-file-completion-event (terminal-ui t)
+    (values (option keyword) (option string)))
+(defun terminal-ui--handle-file-completion-event (ui event)
+  "Apply EVENT to active inline file completion."
+  (let* ((selector (terminal-ui-file-completion-selector ui))
+         (items (selector-items selector))
+         (active-query-p (terminal-ui-file-completion-query ui)))
+    (cond
+      ((and active-query-p (null items) (eq event :complete))
+       (values :handled nil))
+      ((and active-query-p (eq event :escape))
+       (incf (terminal-ui-file-completion-generation ui))
+       (setf (terminal-ui-file-completion-pending ui) nil)
+       (selector-set-items selector nil)
+       (terminal-ui--repaint-live ui)
+       (values :handled nil))
+      ((null items)
+       (values nil nil))
+      ((member event '(:complete :submit))
+       (multiple-value-bind (action entry)
+           (selector-handle-event selector :submit)
+         (if (and (eq action :accept) entry)
+             (if (terminal-ui--accept-file-completion ui entry)
+                 (progn
+                   (terminal-ui--repaint-live ui)
+                   (values :changed nil))
+                 (values :handled nil))
+             (values :handled nil))))
+      ((member event '(:up :down :complete-previous))
+       (multiple-value-bind (action entry)
+           (selector-handle-event selector event)
+         (declare (ignore action entry))
+         (terminal-ui--repaint-live ui)
+         (values :handled nil)))
+
+      (t
+       (values nil nil)))))
 
 (-> terminal-ui--completion-offered-p (terminal-ui) boolean)
 (defun terminal-ui--completion-offered-p (ui)
@@ -2080,6 +2391,7 @@ form keeps every speculative Markdown wrap live until the logical line commits."
        (multiple-value-bind (prompt-spans cursor-offset)
            (terminal-ui--prompt-content ui)
          (values (append (list prompt-spans)
+                         (terminal-ui--file-completion-rows ui row-width)
                          (terminal-ui--completion-rows ui row-width)
                          (list nil))
                  0 cursor-offset))))))
@@ -2521,6 +2833,7 @@ readiness polling, resize coordination and lifecycle cleanup belong to Clinedi."
               (terminal-ui-terminal ui) ':command-finished 1))
            (unless (terminal-ui-fullscreen-p ui)
              (live-region-dismiss (terminal-ui-live-region ui))))
+       (terminal-ui--clear-file-completion ui)
        (setf (terminal-ui-started-p ui) nil
              (terminal-ui-prompt-marker-state ui) ':closed
              (terminal-ui-notice ui) nil
@@ -3211,61 +3524,96 @@ released, so the action may present notices of its own."
 (defun terminal-ui--process-locked-event
     (ui event &key queue-completion-p queue-editing-p)
   "Apply EVENT under UI's presentation lock and return its action and payload."
-  (with-terminal-ui-locked (ui)
+  (terminal-ui--refresh-file-completion ui)
+  (unwind-protect
+       (with-terminal-ui-locked (ui)
     (when (and (terminal-ui-fullscreen-p ui)
                (terminal-ui-fullscreen-handle-event ui event))
       (return-from terminal-ui--process-locked-event (values ':changed nil)))
     (let* ((editor (terminal-ui-editor ui))
-           ;; The editor installs a fresh string on every text change, so
-           ;; holding the reference preserves the pre-event content.
            (text-before (line-editor-text editor))
+           (history-before-p (terminal-ui--editor-history-navigating-p editor))
            (images-before
              (terminal-ui--copy-image-attachments
               (terminal-ui-image-attachments ui)))
-           (completion-items
-             (and (member event '(:complete :complete-previous))
-                  (terminal-ui--reconcile-completions ui)))
-           (effective-event
-             (cond
-               ((and (eq event :complete-previous)
-                     queue-editing-p
-                     (not (terminal-ui-completion-active-p ui)))
-                ':cycle-queue)
-               ((and (eq event :complete)
-                     (null completion-items))
-                (cond
-                  ((and queue-editing-p
-                        (zerop (length (line-editor-text editor))))
-                   ':keep-queue-edit)
-                  ((not queue-completion-p)
-                   ':submit)
-                  ((plusp (length (line-editor-text editor)))
-                   ':queue-submit)
-                  (t
-                   ':edit-queue)))
-               (t
-                event))))
-      (multiple-value-bind (completion-action completion-payload)
-          (terminal-ui--handle-completion-event ui effective-event)
-        (if completion-action
-            (values completion-action completion-payload)
-            (multiple-value-bind (action payload)
-                (terminal-ui--apply-editor-event ui effective-event)
-              (when (eq action :changed)
-                (terminal-ui--restore-history-images ui))
-              (let ((text-after (line-editor-text editor)))
-                (when (and (eq action :changed)
-                           (not (eq text-before text-after))
-                           (not (string= text-before text-after)))
-                  (setf (terminal-ui-completion-dismissed-p ui) nil)))
-              (when (and (member action '(:submit :queue))
-                         (stringp payload))
-                (terminal-ui--remember-image-submission
-                 ui text-before images-before)
-                (setf payload (terminal-ui--submission-input
-                               ui payload)
-                      (terminal-ui-image-attachments ui) nil))
-              (when (member action '(:changed :cleared :submit :queue))
-                (terminal-ui--repaint-live ui))
-              (values action payload)))))))
+           (contexts-before (copy-list (terminal-ui-file-contexts ui))))
+      (unless history-before-p
+        (setf (terminal-ui-attachment-history-stash ui)
+              (list :text text-before :attachments images-before
+                    :file-contexts contexts-before)))
+      (multiple-value-bind (file-action file-payload)
+          (terminal-ui--handle-file-completion-event ui event)
+        (if file-action
+            (values file-action file-payload)
+            (let* ((completion-items
+                     (and (member event '(:complete :complete-previous))
+                          (terminal-ui--reconcile-completions ui)))
+                   (effective-event
+                     (cond
+                       ((and (eq event :complete-previous)
+                             queue-editing-p
+                             (not (terminal-ui-completion-active-p ui)))
+                        ':cycle-queue)
+                       ((and (eq event :complete)
+                             (null completion-items))
+                        (cond
+                          ((and queue-editing-p
+                                (zerop (length (line-editor-text editor))))
+                           ':keep-queue-edit)
+                          ((not queue-completion-p) ':submit)
+                          ((plusp (length (line-editor-text editor))) ':queue-submit)
+                          (t ':edit-queue)))
+                       (t event))))
+              (multiple-value-bind (completion-action completion-payload)
+                  (terminal-ui--handle-completion-event ui effective-event)
+                (if completion-action
+                    (values completion-action completion-payload)
+                    (multiple-value-bind (action payload)
+                        (terminal-ui--apply-editor-event ui effective-event)
+                      (when (and history-before-p (eq action :changed)
+                                 (member event '(:down :history-next))
+                                 (not (terminal-ui--editor-history-navigating-p editor)))
+                        (let ((stash (terminal-ui-attachment-history-stash ui)))
+                          (when (equal (getf stash :text) (line-editor-text editor))
+                            (setf (terminal-ui-image-attachments ui)
+                                  (terminal-ui--copy-image-attachments (getf stash :attachments))
+                                  (terminal-ui-file-contexts ui)
+                                  (copy-list (getf stash :file-contexts))))))
+                      (when (eq action :changed)
+                        (terminal-ui--restore-history-images ui)
+                        (terminal-ui--prune-file-contexts ui))
+                      (when (eq action :cleared)
+                        (setf (terminal-ui-file-contexts ui) nil))
+                      (let ((text-after (line-editor-text editor)))
+                        (when (and (eq action :changed)
+                                   (not (eq text-before text-after))
+                                   (not (string= text-before text-after)))
+                          (setf (terminal-ui-completion-dismissed-p ui) nil)))
+                      (when (and (member action '(:submit :queue))
+                                 (stringp payload))
+                        (setf payload (terminal-ui--submission-input ui payload))
+                        (terminal-ui--remember-image-submission
+                         ui text-before
+                         (remove-if-not (lambda (attachment)
+                                          (search (first attachment) text-before))
+                                        images-before)
+                         (user-message-input-file-contexts payload))
+                        (setf (terminal-ui-image-attachments ui) nil
+                              (terminal-ui-file-contexts ui) nil)
+                        (terminal-ui--clear-file-completion ui))
+                      (when (member action '(:changed :cleared :submit :queue))
+                        (terminal-ui--repaint-live ui))
+                      (values action payload)))))))))
+    (terminal-ui--refresh-file-completion ui)))
 
+(-> terminal-ui--quiesce-file-completion (terminal-ui) null)
+(defun terminal-ui--quiesce-file-completion (ui)
+  "Disable new searches and drain the worker before its runtime is retired.
+Wait outside the presentation lock so the worker can release ownership."
+  (with-terminal-ui-locked (ui)
+    (setf (terminal-ui-file-completion-function ui) nil)
+    (terminal-ui--clear-file-completion ui))
+  (loop until (with-terminal-ui-locked (ui)
+                (not (terminal-ui-file-completion-running-p ui)))
+        do (sleep 0.01))
+  nil)

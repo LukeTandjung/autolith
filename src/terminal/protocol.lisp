@@ -361,6 +361,60 @@ mutation passes through TERMINAL-SET-DIMENSIONS.")
     :accessor terminal-ui-image-history
     :type list
     :documentation "Recent editor history text paired with its image attachments.")
+   (file-completion-function
+    :initarg :file-completion-function
+    :initform nil
+    :accessor terminal-ui-file-completion-function
+    :type (option function)
+    :documentation "Optional indexed workspace file completion provider.")
+   (file-completion-selector
+    :initarg :file-completion-selector
+    :reader terminal-ui-file-completion-selector
+    :type selector
+    :documentation "Clinedi navigation state for inline file completion.")
+   (workspace-root
+    :initarg :workspace-root
+    :initform nil
+    :reader terminal-ui-workspace-root
+    :type (option pathname)
+    :documentation "Workspace root used to validate selected files.")
+   (file-completion-start
+    :initform nil
+    :accessor terminal-ui-file-completion-start
+    :type (option integer)
+    :documentation "Start of the active @ query in the editor.")
+   (file-completion-end
+    :initform nil
+    :accessor terminal-ui-file-completion-end
+    :type (option integer)
+    :documentation "Cursor end of the active @ query in the editor.")
+   (file-completion-query
+    :initform nil
+    :accessor terminal-ui-file-completion-query
+    :type (option string)
+    :documentation "Query whose indexed file results are installed.")
+   (file-completion-generation
+    :initform 0
+    :accessor terminal-ui-file-completion-generation
+    :type (integer 0)
+    :documentation "Generation used to reject stale indexed file results.")
+   (file-completion-pending
+    :initform nil
+    :accessor terminal-ui-file-completion-pending
+    :documentation "Latest search request, coalesced under the UI lock.")
+   (file-completion-running-p
+    :initform nil
+    :accessor terminal-ui-file-completion-running-p
+    :documentation "True while the single completion worker owns the request queue.")
+   (attachment-history-stash
+    :initform nil
+    :accessor terminal-ui-attachment-history-stash
+    :documentation "Attachment metadata for the draft saved during history navigation.")
+   (file-contexts
+    :initform nil
+    :accessor terminal-ui-file-contexts
+    :type list
+    :documentation "Workspace file snapshots selected in the current draft.")
    (stream-tail
     :initform nil
     :accessor terminal-ui-stream-tail

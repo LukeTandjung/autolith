@@ -1754,9 +1754,109 @@ process without releasing the lease, exercising kernel cleanup."
       (platform-delete-directory-tree *platform* root :validate t :if-does-not-exist ':ignore)))
   nil)
 
+(-> test-conversation-workspace-file-context () null)
+(defun test-conversation-workspace-file-context ()
+  "Test hidden file context persistence and exact provider replay."
+  (let* ((configuration (test-configuration))
+         (root (test-configuration-root configuration))
+         (source (merge-pathnames "workspace/source.lisp" root))
+         (image (merge-pathnames "workspace/image.png" root))
+         (file-content "(list \"quoted\" #\\Newline)\nAutolith workspace file context (JSON data):")
+         (visible "Review @workspace/source.lisp"))
+    (unwind-protect
+         (progn
+           (ensure-directories-exist source)
+           (with-open-file (stream source
+                                   :direction ':output
+                                   :if-exists ':supersede
+                                   :external-format ':utf-8)
+             (write-string file-content stream))
+           (test-conversation--write-tiny-png image)
+           (let* ((context (workspace-file-context-snapshot
+                            root "workspace/source.lisp"))
+                  (input (user-message-input-create
+                          :text visible
+                          :image-pathnames (list (truename image))
+                          :file-contexts (list context)))
+                  (conversation
+                    (conversation-create configuration
+                                         :identifier "file-context")))
+             (multiple-value-bind (item record)
+                 (conversation-append-user-message conversation input)
+               (let* ((content (json-get item "content"))
+                      (provider-text (json-get (aref content 3) "text"))
+                      (json-start (position #\{ provider-text)))
+                 (test-assert
+                  (and (string= (getf (rest record) :content) visible)
+                       (not (search file-content
+                                    (getf (rest record) :content)))
+                       (string= (getf (rest record) :context-content)
+                                provider-text))
+                  "the durable visible message stays concise")
+                 (let* ((context-json (json-decode
+                                       (subseq provider-text json-start)))
+                        (files (json-get context-json "files"))
+                        (file (aref files 0)))
+                   (test-assert
+                    (and (string= (json-get file "path")
+                                  "workspace/source.lisp")
+                         (string= (json-get file "content") file-content))
+                    "provider context carries exact path and UTF-8 content"))
+                 (let* ((loaded
+                          (conversation-load-by-id configuration "file-context"))
+                        (loaded-content
+                          (json-get (first (conversation-input-items loaded))
+                                    "content")))
+                   (test-assert
+                    (string= (json-get (aref loaded-content 3) "text")
+                             provider-text)
+                    "conversation reload reconstructs file context with images"))))))
+      (uiop:delete-directory-tree root :validate t :if-does-not-exist ':ignore)))
+  nil)
+
+
+(defun test-conversation-file-only-replay ()
+  "Replay a queued file snapshot after its source has been deleted."
+  (let* ((configuration (test-configuration))
+         (root (test-configuration-root configuration))
+         (source (merge-pathnames "file.txt" root)))
+    (unwind-protect
+        (progn
+         (with-open-file
+             (s source :direction ':output :external-format ':utf-8)
+           (write-string "é exact snapshot" s))
+         (let* ((context (workspace-file-context-snapshot root "file.txt"))
+                (input
+                 (user-message-input-create :text "read @file.txt"
+                                            :file-contexts (list context)))
+                (restored
+                 (application-input--restore-pending-form
+                  (application-input--pending-form input)))
+                (conversation
+                 (conversation-create configuration :identifier "file-only")))
+           (delete-file source)
+           (multiple-value-bind (item record)
+               (conversation-append-user-message conversation restored)
+             (declare (ignore record))
+             (let ((reloaded
+                    (conversation-load-by-id configuration "file-only")))
+               (test-assert
+                (string= (json-encode item)
+                         (json-encode
+                          (first (conversation-input-items reloaded))))
+                "file-only replay preserves provider text after source deletion")
+               (test-assert
+                (search "é exact snapshot"
+                        (json-get (aref (json-get item "content") 0) "text"))
+                "queued input keeps exact UTF-8 snapshot")))))
+      (uiop/filesystem:delete-directory-tree root :validate t
+                                             :if-does-not-exist ':ignore)))
+  nil)
 (-> test-conversation-persistence () null)
 (defun test-conversation-persistence ()
   "Test append-only conversation projection and incomplete-tail recovery."
+  (test-conversation-workspace-file-context)
+  (test-conversation-file-only-replay)
   (let* ((configuration (test-configuration))
          (root (test-configuration-root configuration)))
     (unwind-protect
