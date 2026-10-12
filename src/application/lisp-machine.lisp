@@ -53,7 +53,8 @@ are presented by the evaluator."
     (user-message-input
      (user-message-input-create
       :text text
-      :image-pathnames (user-message-input-image-pathnames input)))))
+      :image-pathnames (user-message-input-image-pathnames input)
+      :file-contexts (user-message-input-file-contexts input)))))
 
 (-> application-lisp--control-condition-p (condition) boolean)
 (defun application-lisp--control-condition-p (condition)

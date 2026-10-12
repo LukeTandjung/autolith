@@ -5940,6 +5940,10 @@
             (uiop:chdir old-workspace)
             (setf *default-pathname-defaults* old-workspace)
             (let ((selected (application-set-working-directory application workspace)))
+             (test-assert
+              (uiop:pathname-equal
+               (terminal-ui-workspace-root (application-ui application)) workspace)
+              "workspace switching rebinds inline file selection")
              (test-assert (equal selected (truename workspace))
                           "workspace switching returns the selected directory")
              (test-assert

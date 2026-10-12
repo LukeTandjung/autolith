@@ -436,6 +436,29 @@ exchange without scrolling through reasoning and tool activity.")
      :placeholder *application-placeholder*
      :completion-function #'application-command-completion-entries)))
 
+(-> application--connect-file-completion (application) null)
+(defun application--connect-file-completion (application)
+  "Bind file selection to APPLICATION's current runtime after each connection."
+  (let* ((ui (application-ui application))
+         (configuration (application-configuration application))
+         (registry (application-tool-registry application))
+         (tool (tool-registry-find registry "search" "files")))
+    (when ui
+      (with-terminal-ui-locked (ui)
+        (terminal-ui--clear-file-completion ui)
+        (setf (slot-value ui 'workspace-root)
+              (config :working-directory configuration)
+              (terminal-ui-file-completion-function ui)
+              (when tool
+                (lambda (query)
+                  (mapcar (lambda (path)
+                            (list :name path :value path :argument nil
+                                  :description "workspace file"))
+                          (search-worker-file-paths
+                           (search-tool-engine tool) configuration query
+                           :maximum-results 20))))))))
+  nil)
+
 (-> application--configuration-for-conversation
     (configuration conversation)
     configuration)
@@ -555,6 +578,8 @@ model's effort choice to CONFIGURATION--CLONE."
 (defun application-disconnect-task-presentation (application)
   "Disconnect APPLICATION's task observer and clear its live session-job rows."
   (application-job-completions-disconnect application)
+  (when (application-ui application)
+    (terminal-ui--quiesce-file-completion (application-ui application)))
   (with-lock-held ((application-task-presentation-lock application))
     (application--disconnect-task-presentation-locked application))
   (application--wake-input-controller application)
@@ -563,6 +588,7 @@ model's effort choice to CONFIGURATION--CLONE."
 (-> application-connect-task-presentation (application) null)
 (defun application-connect-task-presentation (application)
   "Atomically replace APPLICATION's task listener and active UI projection."
+  (application--connect-file-completion application)
   (with-lock-held ((application-task-presentation-lock application))
     (application--disconnect-task-presentation-locked application)
     (let ((agent (and (slot-boundp application 'agent)
