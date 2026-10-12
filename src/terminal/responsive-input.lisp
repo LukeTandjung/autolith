@@ -2758,6 +2758,9 @@ may execute immediately; other Lisp waits for the idle boundary."
                 :queue-completion-p turn-active-p
                 :queue-editing-p follow-up-editing-p)
              (case action
+               (:cycle-reasoning
+                (application-input-controller--handle-submission
+                 controller "/effort next"))
                (:cleared
                 (application-input-controller--clear-follow-up-edit controller))
                (:submit

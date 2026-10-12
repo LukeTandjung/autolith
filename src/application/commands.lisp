@@ -699,6 +699,16 @@ notice preference is on, so enabling it mid-session takes effect immediately."
                                          "current"
                                          "")))))
 
+(-> application--next-reasoning-effort (application) (option string))
+(defun application--next-reasoning-effort (application)
+  "Return the next configured model effort, wrapping after the last value."
+  (let* ((configuration (application-configuration application))
+         (efforts (configuration--reasoning-efforts-for
+                   (config :model configuration)))
+         (tail (member (config :reasoning-effort configuration)
+                       efforts :test #'string=)))
+    (or (second tail) (first efforts))))
+
 (-> application--persist-model-selection (application configuration) null)
 (defun application--persist-model-selection (application configuration)
   "Record CONFIGURATION's model and effort on the active conversation.
@@ -2775,7 +2785,7 @@ The current value and its source sit in aligned columns of their own."
 
 (define-application-command application--builtin-effort-command
     (:name "/effort"
-     :argument "[LEVEL]"
+     :argument "[LEVEL|next]"
      :description "pick the reasoning effort"
      :tip "sets the model's reasoning budget without changing models. Higher levels allow more reasoning and can take longer; available levels depend on the model."
      :busy-behavior :apply
@@ -2784,7 +2794,11 @@ The current value and its source sit in aligned columns of their own."
     (application &optional (effort nil effort-supplied-p))
   (let ((effort
           (if effort-supplied-p
-              effort
+              ;; Resolve relative requests here, not on the input thread. Busy
+              ;; commands execute serially at the next safe turn boundary.
+              (if (string-equal effort "next")
+                  (application--next-reasoning-effort application)
+                  effort)
               (and *application-command-interactive-p*
                    (application--pick-reasoning-effort application)))))
     (when effort

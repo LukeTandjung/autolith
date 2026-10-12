@@ -3449,6 +3449,8 @@ installed owner the thunk simply runs."
             (stringp (second event))
             (terminal-ui--attach-pasted-image ui (second event)))
        (values :changed nil))
+      ((eq event :cycle-reasoning)
+       (values :cycle-reasoning nil))
       ((eq event :complete)
        (line-editor-handle-event editor '(:insert "    "))
        (values :changed nil))
@@ -3550,10 +3552,12 @@ released, so the action may present notices of its own."
                           (terminal-ui--reconcile-completions ui)))
                    (effective-event
                      (cond
-                       ((and (eq event :complete-previous)
-                             queue-editing-p
-                             (not (terminal-ui-completion-active-p ui)))
+                       ((and (eq event :complete-previous) completion-items)
+                        event)
+                       ((and (eq event :complete-previous) queue-editing-p)
                         ':cycle-queue)
+                       ((eq event :complete-previous)
+                        ':cycle-reasoning)
                        ((and (eq event :complete)
                              (null completion-items))
                         (cond

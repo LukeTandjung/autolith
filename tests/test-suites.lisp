@@ -765,6 +765,7 @@
   test-terminal-finalized-scrollback
   test-terminal-resize-frame
   test-terminal-relayed-resize
+  test-terminal-shift-tab-priority
   test-terminal-line-editor
   test-terminal-history-replacement
   test-terminal-image-attachments
