@@ -7875,6 +7875,76 @@
       (platform-delete-directory-tree *platform* root :validate t :if-does-not-exist ':ignore)))
   nil)
 
+(defun test-application-shift-tab-cycle (application ui configuration)
+  "Exercise relative cycling through the active-turn command queue."
+  (let* ((model (config :model configuration))
+         (efforts (configuration--reasoning-efforts-for model))
+         (controller
+           (application-input-controller-create
+            application :load-pending-p nil
+            :pending-persistence-enabled-p t :start-reader-p nil)))
+    (unwind-protect
+         (progn
+           (test-assert (equal efforts (provider-model-reasoning-efforts-for model))
+                        "cycling uses the current provider model's effort order")
+           (dolist (current efforts)
+             (application-set-reasoning-effort application current)
+             (test-assert
+              (string= (application--next-reasoning-effort application)
+                       (or (second (member current efforts :test #'string=))
+                           (first efforts)))
+              "every supported effort advances once, including wraparound"))
+           (application-set-reasoning-effort application "low")
+           (test-call-with-function-replacements
+            (list (list 'provider-model-reasoning-efforts-for
+                        (lambda (model) (declare (ignore model)) '("low" "high"))))
+            (lambda ()
+              (test-assert
+               (string= (application--next-reasoning-effort application) "high")
+               "restricted models skip unsupported intermediate efforts")))
+           (test-call-with-function-replacements
+            (list (list 'provider-model-reasoning-efforts-for
+                        (lambda (model) (declare (ignore model)) '("high"))))
+            (lambda ()
+              (test-assert
+               (string= (application--next-reasoning-effort application) "high")
+               "an effort outside the model list advances to its first effort")))
+           (application-set-reasoning-effort application (first efforts))
+           (terminal-ui-set-input ui "keep this draft")
+           (setf (application-input-controller-active-p controller) t
+                 (application-input-controller-active-work-kind controller) :message)
+           (dotimes (index 2)
+             (application-input-controller--process-event controller :complete-previous))
+           (test-assert
+            (string= (config :reasoning-effort
+                      (application-configuration application)) (first efforts))
+            "busy key events defer configuration changes to a safe boundary")
+           (test-assert
+            (string= (line-editor-text (terminal-ui-editor ui)) "keep this draft")
+            "repeated busy cycling preserves the draft")
+           (application-input-controller--apply-pending-commands controller)
+           (test-assert
+            (string= (config :reasoning-effort
+                      (application-configuration application))
+                     (nth (mod 2 (length efforts)) efforts))
+            "two queued key events advance twice rather than reuse a stale target")
+           (test-assert
+            (string= (getf (preferences-load-values configuration) :reasoning-effort)
+                     (nth (mod 2 (length efforts)) efforts))
+            "relative cycling persists through the normal effort command")
+           (test-call-with-function-replacements
+            (list (list 'provider-model-reasoning-efforts-for
+                        (lambda (model) (declare (ignore model)) nil)))
+            (lambda ()
+              (test-assert
+               (equal (configuration--reasoning-efforts-for model)
+                      *supported-reasoning-efforts*)
+               "a provider without effort metadata uses configuration defaults")))
+           (application-set-reasoning-effort application "low"))
+      (setf (application-input-controller-active-p controller) nil)
+      (application-input-controller-stop controller)))
+  nil)
+
 (-> test-effort-switch () null)
 (defun test-effort-switch ()
   "Test in-place model and reasoning-effort configuration switching."
@@ -7919,6 +7989,7 @@
              (test-assert
               (string= (getf preferences :model) *default-model*)
               "switching effort saves the accompanying model default"))
+           (test-application-shift-tab-cycle application ui configuration)
            (let ((updated (application-configuration application)))
              (test-assert (equal (config :source-root updated)
                                  (config :source-root configuration))

@@ -2954,6 +2954,45 @@ Resize tests drive size changes through COLUMNS and LINES."
   nil)
 
 
+(DEFUN TEST-TERMINAL-SHIFT-TAB-PRIORITY ()
+  "Test Shift-Tab ownership order and draft preservation."
+  (LET* ((TERMINAL (MAKE-INSTANCE 'RECORDING-TERMINAL :COLUMNS 80))
+         (COMPLETION
+          (LIST :NAME "/effort" :VALUE "/effort" :ARGUMENT "LEVEL" :DESCRIPTION
+                "reasoning"))
+         (UI
+          (TERMINAL-UI-CREATE :TERMINAL TERMINAL :COMPLETIONS
+                              (LIST COMPLETION))))
+    (WITH-TERMINAL-UI (ACTIVE-UI UI)
+      (TERMINAL-UI-SET-INPUT ACTIVE-UI "/ef")
+      (MULTIPLE-VALUE-BIND (ACTION PAYLOAD)
+          (TERMINAL-UI-PROCESS-EVENT ACTIVE-UI :COMPLETE-PREVIOUS)
+        (DECLARE (IGNORE PAYLOAD))
+        (TEST-ASSERT
+         (AND (EQ ACTION :CHANGED)
+              (STRING= (LINE-EDITOR-TEXT (TERMINAL-UI-EDITOR ACTIVE-UI))
+                       "/effort "))
+         "unopened command completion takes Shift-Tab before reasoning"))
+      (TERMINAL-UI-PROCESS-EVENT ACTIVE-UI :INTERRUPT)
+      (TERMINAL-UI-SET-INPUT ACTIVE-UI "queued draft")
+      (MULTIPLE-VALUE-BIND (ACTION PAYLOAD)
+          (TERMINAL-UI-PROCESS-EVENT ACTIVE-UI :COMPLETE-PREVIOUS
+                                     :QUEUE-EDITING-P T)
+        (DECLARE (IGNORE PAYLOAD))
+        (TEST-ASSERT (EQ ACTION :CYCLE-QUEUE)
+                     "follow-up cycling takes Shift-Tab before reasoning"))
+      (TERMINAL-UI-SET-INPUT ACTIVE-UI "preserve this draft")
+      (MULTIPLE-VALUE-BIND (ACTION PAYLOAD)
+          (TERMINAL-UI-PROCESS-EVENT ACTIVE-UI :COMPLETE-PREVIOUS)
+        (DECLARE (IGNORE PAYLOAD))
+        (TEST-ASSERT
+         (AND (EQ ACTION :CYCLE-REASONING)
+              (STRING= (LINE-EDITOR-TEXT (TERMINAL-UI-EDITOR ACTIVE-UI))
+                       "preserve this draft"))
+         "reasoning cycling is the final Shift-Tab action and preserves the draft"))))
+  NIL)
+
+
 (defclass prompt-recording-terminal (stream-terminal)
   ((chunks :initform nil :accessor prompt-recording-terminal-chunks
            :documentation "Captured application prompt controls.")
