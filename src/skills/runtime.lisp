@@ -179,18 +179,21 @@ SKILL.LOAD selects a skill; catalog text and durable conversation text do not."
 
 (-> skill-roots (configuration) list)
 (defun skill-roots (configuration)
-  "Return skill roots by precedence: project, Autolith user, shared user,
-optional site, and bundled.
+  "Return skill roots by precedence: project Autolith, project Pi, Autolith user,
+shared user, optional site, and bundled.
 
-The shared user root ~/.agents/skills/ is the cross-agent convention for
-SKILL.md directories, so skills installed there for other agents are
-discovered without copying."
+Project .pi/skills/ and shared ~/.agents/skills/ support standard SKILL.md
+skills installed for other agents without copying."
   (remove-duplicates
     (remove
      nil
      (list
       (merge-pathnames
        ".autolith/skills/"
+       (workspace-project-root
+        (config :working-directory configuration)))
+      (merge-pathnames
+       ".pi/skills/"
        (workspace-project-root
         (config :working-directory configuration)))
       (merge-pathnames "skills/"
