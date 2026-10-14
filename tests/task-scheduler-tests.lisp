@@ -2645,15 +2645,25 @@ exactly that race."
                      (list "output_tokens" output)
                      (list "total_tokens" (+ input output))
                      (list "cached_input_tokens" cached)
-                     (list "cache_creation_input_tokens" created)))
+                     (list "cache_creation_input_tokens" created)
+                     (list "input_tokens_details"
+                           (list (list "cached_tokens" cached)))))
 
              (note-request (job number request-usage)
-               (task-progress-note-status
-                job ':provider-request-started
-                (list :request-number number))
-               (task-progress-note-status
-                job ':provider-request-completed
-                (list :request-number number :usage request-usage))))
+               (let* ((attribution (make-list 270000 :initial-element "request"))
+                      (provider-usage
+                        (append request-usage
+                                (list (list "attribution" attribution)))))
+                 (task-progress-note-status
+                  job ':provider-request-started
+                  (list :request-number number))
+                 (task-progress-note-status
+                  job ':provider-request-completed
+                  (list :request-number number :usage provider-usage))
+                 (test-assert
+                  (eq (second (assoc "attribution" provider-usage :test #'string=))
+                      attribution)
+                  "aggregation does not alter request-level attribution"))))
       (unwind-protect
            (progn
              (setf direct
@@ -2669,6 +2679,11 @@ exactly that race."
                 (equal (getf (task-progress-snapshot direct) :usage)
                        first-usage)
                 "one child provider request preserves its normalized usage"))
+             (let ((progress (task-job-progress direct)))
+               (with-lock-held ((task-progress-lock progress))
+                 (setf (task-progress-usage progress)
+                       (append (task-progress-usage progress)
+                               '(("attribution" ("legacy aggregate")))))))
              (note-request
               direct 2 (usage :input 7 :output 4 :cached 2 :created 1))
              (let* ((expected
@@ -2722,12 +2737,21 @@ exactly that race."
                          direct snapshot primary
                          :preview-limit *task-result-preview-limit*
                          :include-progress-p t)))
-                 (test-assert
-                  (and (equal (getf (getf native :result) :usage) expected)
-                       (equal (run-job--usage (getf snapshot :result))
-                              '(:input-tokens 10 :output-tokens 6
-                                :provider-requests 2)))
-                  "failed child and durable job projections retain cumulative usage"))))
+                (test-assert
+                 (and (equal (getf (getf native :result) :usage) expected)
+                      (equal (getf (getf native :progress) :usage) expected)
+                      (let ((*read-eval* nil)
+                            (*print-readably* t)
+                            (*print-pretty* nil))
+                        (equal (getf (getf (read-from-string
+                                           (write-to-string native))
+                                          :result)
+                                     :usage)
+                               expected))
+                      (equal (run-job--usage (getf snapshot :result))
+                             '(:input-tokens 10 :output-tokens 6
+                               :provider-requests 2)))
+                 "durable child projections sum nested counters without attribution"))))
         (dolist (job (remove nil (list nested direct)))
           (unless (job-terminal-p job)
             (task-tests--publish-terminal

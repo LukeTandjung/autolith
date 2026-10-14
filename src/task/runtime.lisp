@@ -464,35 +464,43 @@ under the progress lock before releasing it to other threads."
 
 (-> task-progress--merge-usage (t t) t)
 (defun task-progress--merge-usage (aggregate usage)
-  "Add portable provider USAGE counters to AGGREGATE without losing metadata."
-  (cond
-    ((null usage)
-     (copy-tree aggregate))
-    ((null aggregate)
-     (copy-tree usage))
-    ((and (task-progress--usage-object-p aggregate)
-          (task-progress--usage-object-p usage))
-     (let ((merged (copy-tree aggregate)))
-       (dolist (entry usage merged)
-         (let* ((name (first entry))
-                (value (second entry))
-                (existing (assoc name merged :test #'string=)))
-           (if existing
-               (let ((old-value (second existing)))
-                 (setf (second existing)
-                       (cond
-                         ((and (typep old-value '(integer 0))
-                               (typep value '(integer 0)))
-                          (+ old-value value))
-                         ((and (task-progress--usage-object-p old-value)
-                               (task-progress--usage-object-p value))
-                          (task-progress--merge-usage old-value value))
-                         (t
-                          (copy-tree value)))))
-               (setf merged
-                     (append merged (list (copy-tree entry)))))))))
-    (t
-     (copy-tree usage))))
+  "Add portable USAGE counters, omitting request-sized attribution metadata."
+  (labels ((without-attribution (object)
+             (if (task-progress--usage-object-p object)
+                 (loop for (name value) in object
+                       unless (string= name "attribution")
+                         collect (list name (without-attribution value)))
+                 (copy-tree object))))
+    (let ((merged (without-attribution aggregate)))
+      (cond
+        ((null usage)
+         merged)
+        ((null aggregate)
+         (without-attribution usage))
+        ((and (task-progress--usage-object-p aggregate)
+              (task-progress--usage-object-p usage))
+         (dolist (entry usage merged)
+           (let* ((name (first entry))
+                  (value (second entry))
+                  (existing (assoc name merged :test #'string=)))
+             (unless (string= name "attribution")
+               (if existing
+                   (let ((old-value (second existing)))
+                     (setf (second existing)
+                           (cond
+                             ((and (typep old-value '(integer 0))
+                                   (typep value '(integer 0)))
+                              (+ old-value value))
+                             ((and (task-progress--usage-object-p old-value)
+                                   (task-progress--usage-object-p value))
+                              (task-progress--merge-usage old-value value))
+                             (t
+                              (without-attribution value)))))
+                   (setf merged
+                         (append merged
+                                 (list (list name (without-attribution value))))))))))
+        (t
+         (without-attribution usage))))))
 
 (-> task-progress--event-usage (t) list)
 (defun task-progress--event-usage (usage)
