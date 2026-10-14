@@ -27,6 +27,19 @@ Autolith's prompt window can also evuluate lisp forms directly:
 This can be frequently helpful since you can use the exact same tools
 the clanker can, and the same machinery is exposed to you.
 
+* Continuous planning
+
+Use =/planner on [executor [planner]]= to enable a persistent, tool-free planning
+pass before each primary executor request. Omitted model names use the current
+model. Use =/planner= to inspect the selection, =/planner off= to disable it, or
+=/planner auto EXECUTOR [PLANNER]= to enable planning with an explicit executor.
+
+The selection, planner history and acknowledged execution records are stored
+with the conversation. Each model pairing has its own planner history. Planning
+advice is assistant context, not approval; delegated child turns use their own
+normal inference path. Planner and executor requests share the per-turn request
+limit and the active mission's inference budget.
+
 * Goals and verified missions
 
 Use =(goal "OBJECTIVE")= for lightweight autonomous work. Use =(goal "pause")=,
@@ -338,8 +351,8 @@ and fails if they exceed the shutdown timeout.
 
 * Fullscreen terminal
 
-Autolith uses the ordinary inline terminal presentation by default. Opt into the
-application-owned fullscreen viewport for a session with:
+Autolith uses an application-owned fullscreen viewport by default. Force it for
+one session with:
 
 #+BEGIN_SRC sh
 autolith --fullscreen
@@ -362,6 +375,14 @@ Pass =nil= to =preferences-set-fullscreen= to return future launches to inline m
 Because the viewport owns the mouse, hold =Shift= while dragging to select text
 with the terminal emulator. Fullscreen history lives in the application rather
 than the terminal emulator's native scrollback.
+
+Use the left session rail to inspect owned child-agent and recursive-inference
+conversations. Select a session with the mouse, then use =PageUp=/=PageDown=,
+=Ctrl-Home= and =Ctrl-End= to browse its read-only transcript. Inspection loads
+pages of at most 128 records and caches four session views. Click =PRIMARY= or
+press =Esc= to return to your primary draft and transcript position. The rail
+is hidden in narrow terminals. Changing the primary conversation or workspace
+revokes cached inspection views.
 
 For input with matching saved memories, a dim =@ N relevant memories exist= line
 appears below your message. Its count is the number offered to the model for that
@@ -871,11 +892,19 @@ Current IDs are case-sensitive. Legacy hexadecimal IDs accept either case.
 =pause= cancels active work and holds queued primary work.
 =kill= requests graceful shutdown.
 
-Detaching hands a session to a supervised process group that outlives the
-terminal. Windows has no process groups or detached sessions, so sessions
-there always run directly in the terminal that started them: =(detach)= and
-client-first starts report that the handoff is withheld, while the loopback
-endpoint and the =localgroup= commands work as elsewhere.
+Detaching hands a session to a supervised process that outlives the terminal.
+Established sessions also survive an abrupt client disconnect by default; attach
+again to continue. Set =persistent-sessions-p= to =nil= to exit after losing the
+controlling client unless you explicitly detached. A new client-first session
+still exits if its first client never attaches.
+
+Interactive sessions prevent host sleep by default, including while disconnected.
+Set =prevent-session-sleep-p= to =nil= to disable this policy. Autolith uses
+=caffeinate= on macOS, =systemd-inhibit= on Linux, and a Windows execution-state
+helper. The helper follows its owning session process. Checkpointing stops and
+reaps it, joins its monitor, then reacquires it when execution resumes or rolls
+back. If the host refuses inhibition, use the =continue-without-inhibitor=
+restart. Headless and pristine startup skip acquisition.
 
 Autolith stores configuration, durable data, process state, and replaceable
 caches below =${XDG_CONFIG_HOME:-~/.config}/autolith/=,
@@ -1299,6 +1328,15 @@ available. =(models)= triggers discovery. You can also pass non-secret
 =:headers= and static =:models= for descriptions, windows, efforts, or
 providers that have no model-list endpoint.
 
+NInfer is registered as an unauthenticated Chat Completions provider, with the
+local endpoint =http://127.0.0.1:8080/v1/chat/completions=. Configure
+=:provider-endpoint= for another server; discover its served models with
+=(models)=. The catalog URL replaces the endpoint's =/chat/completions= suffix
+with =/models=. Requests retain assistant =reasoning_content=, use NInfer's
+thinking-template options, and cap =max_tokens= at 32768. Select =none= or
+=minimal= effort to disable thinking, =low= or =medium= directly, and =high= or
+=xhigh= for the highest template effort.
+
 Built-in ChatGPT subscriptions use browser OAuth with PKCE and a local callback
 on =localhost:1455= or =localhost:1457= by default. Use
 =(auth "chatgpt" "device")= or
@@ -1513,6 +1551,15 @@ Promotion proceeds from session to project to global scope, with renewed evaluat
 at each scope and an owner-state guard against intervening changes. Recover an
 interrupted operation explicitly using recorded evidence; replay never repeats its
 effects automatically.
+
+** Skill Discovery
+
+Install project skills under =.autolith/skills/= or =.pi/skills/= at the Git
+project root. Autolith discovers =SKILL.sexp= and standard =SKILL.md= files.
+For duplicate names, precedence is project Autolith, project Pi, Autolith
+user configuration, =~/.agents/skills/=, optional site configuration, then
+bundled skills. Newly added and removed project skills are reflected in the
+next request's catalog.
 
 ** Executable Skills
 

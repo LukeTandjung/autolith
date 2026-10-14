@@ -22,38 +22,33 @@
      &key (:index (integer 0)) (:total (integer 1))
           (:activity-callback (option function)))
     list)
+
+
 (defun rlm-map--run-item
-    (item context contract budget capabilities provider configuration
-     source-registry &key index total activity-callback)
+       (item context contract budget capabilities provider configuration source-registry
+        &key index total activity-callback)
   "Run one map ITEM's frame and return its result or captured failure."
   (let* ((task (getf item ':task))
          (item-activity-callback
+          (rlm-inherit-activity-callback
            (and activity-callback
                 (lambda (activity)
-                  (rlm--note-activity
-                   activity-callback
-                   (format nil "frame ~D/~D · ~A"
-                           (1+ index) total activity))))))
+                  (rlm--note-activity activity-callback
+                                      (format nil "frame ~D/~D · ~A" (1+ index) total
+                                              activity))))
+           :parent activity-callback)))
     (handler-case
-        (multiple-value-bind (value trace-identifier tokens-spent)
-            (infer task
-                   :context (append (rlm--context-designators context)
-                                    (rlm--context-designators
-                                     (getf item ':context)))
-                   :contract contract
-                   :budget budget
-                   :capabilities capabilities
-                   :provider provider
-                   :configuration configuration
-                   :source-registry source-registry
-                   :activity-callback item-activity-callback)
-          (list ':task task ':value value ':trace trace-identifier
-                ':tokens tokens-spent))
-      (rlm-partial-result (condition)
-        (append (list :task task)
-                (rlm-partial-result-observation condition)))
-      (error (condition)
-        (list ':task task ':error (format nil "~A" condition))))))
+     (multiple-value-bind (value trace-identifier tokens-spent)
+         (infer task :context
+                (append (rlm--context-designators context)
+                        (rlm--context-designators (getf item ':context)))
+                :contract contract :budget budget :capabilities capabilities :provider
+                provider :configuration configuration :source-registry source-registry
+                :activity-callback item-activity-callback)
+       (list ':task task ':value value ':trace trace-identifier ':tokens tokens-spent))
+     (rlm-partial-result (condition)
+      (append (list :task task) (rlm-partial-result-observation condition)))
+     (error (condition) (list ':task task ':error (format nil "~A" condition))))))
 
 (-> rlm-map--job-result (list job) list)
 (defun rlm-map--job-result (item job)

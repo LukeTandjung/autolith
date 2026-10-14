@@ -33,24 +33,26 @@
 
 (-> application-call-with-localgroup-quiesced (application function) t)
 (defun application-call-with-localgroup-quiesced (application function)
-  "Call FUNCTION without localgroup threads and reconnect clients to the parent."
-  (let ((session (application-localgroup-session application)))
-    (unless session
-      (return-from application-call-with-localgroup-quiesced (funcall function)))
-    (let ((token (image-daemon:daemon-runtime-token session))
-          (created-at (image-daemon:daemon-runtime-created-at session))
-          (reconnect-id (make-identifier))
-          (detached-explicitly-p
-            (with-lock-held ((image-daemon:daemon-runtime-lock session))
-              (localgroup-session-detached-explicitly-p session))))
-      (unwind-protect
-           (progn
-             (localgroup--finish-checkpoint-attachments session reconnect-id)
-             (localgroup-stop application)
-             (funcall function))
-        (when (eq (application-localgroup-session application) session)
-          (localgroup-stop application))
-        (unless (application-localgroup-session application)
-          (localgroup-start application :token token :created-at created-at
-                                       :detached-explicitly-p detached-explicitly-p
-                                       :checkpoint-reconnect-id reconnect-id))))))
+  "Call FUNCTION without localgroup or sleep-monitor threads; reconnect on unwind."
+  (session-awake-call-quiesced
+   (lambda ()
+     (let ((session (application-localgroup-session application)))
+       (unless session
+         (return-from application-call-with-localgroup-quiesced (funcall function)))
+       (let ((token (image-daemon:daemon-runtime-token session))
+             (created-at (image-daemon:daemon-runtime-created-at session))
+             (reconnect-id (make-identifier))
+             (detached-explicitly-p
+               (with-lock-held ((image-daemon:daemon-runtime-lock session))
+                 (localgroup-session-detached-explicitly-p session))))
+         (unwind-protect
+              (progn
+                (localgroup--finish-checkpoint-attachments session reconnect-id)
+                (localgroup-stop application)
+                (funcall function))
+           (when (eq (application-localgroup-session application) session)
+             (localgroup-stop application))
+           (unless (application-localgroup-session application)
+             (localgroup-start application :token token :created-at created-at
+                                          :detached-explicitly-p detached-explicitly-p
+                                          :checkpoint-reconnect-id reconnect-id))))))))

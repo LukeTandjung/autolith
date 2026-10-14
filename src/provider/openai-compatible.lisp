@@ -197,6 +197,18 @@ advertises one, :CONTEXT-WINDOW."
              (format nil "The model discovery endpoint returned HTTP ~D."
                      status))))
 
+(-> openai-compatible-model-discovery-headers
+    (credential-manager oauth-credentials list) list)
+(defgeneric openai-compatible-model-discovery-headers (manager credentials custom)
+  (:documentation "Return model-catalog HTTP headers for MANAGER's authentication policy."))
+
+(defmethod openai-compatible-model-discovery-headers
+    ((manager credential-manager) (credentials oauth-credentials) custom)
+  "Authenticate ordinary OpenAI-compatible model discovery with bearer credentials."
+  (declare (ignore manager))
+  (openai-compatible--authenticated-headers
+   credentials :accept "application/json" :custom custom))
+
 (-> openai-compatible--fetch-models
     (configuration &key
                    (:provider-name non-empty-string)
@@ -228,10 +240,8 @@ manager from PROVIDER-NAME."
                  (dexador:get
                   endpoint
                   :headers
-                  (openai-compatible--authenticated-headers
-                   credentials
-                   :accept "application/json"
-                   :custom headers)
+                  (openai-compatible-model-discovery-headers
+                   manager credentials headers)
                   :force-string t
                   :connect-timeout 10
                   :read-timeout 30)))

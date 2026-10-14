@@ -115,6 +115,12 @@
   test-terminal-fullscreen-exit-epilogue
   test-terminal-fullscreen-forced-exit-resume)
 
+(define-test-suite sidebar
+  test-sidebar-owned-conversations
+  test-sidebar-full-frames
+  test-sidebar-queued-completion-priority
+  test-sidebar-native-observation)
+
 (define-test-suite job-completion-policy
   test-job-completion-policy-normalization
   test-job-completion-policy-schema-invocation
@@ -723,6 +729,26 @@
 (define-test-suite task-inspector
   test-task-inspector-transcript
   test-task-inspector-dispatch)
+
+(define-test-suite ninfer-provider
+  test-ninfer-provider-request
+  test-ninfer-provider-stream
+  test-ninfer-provider-discovery)
+
+(define-test-suite session-awake
+  test-session-awake-policy
+  test-session-awake-recovery
+  test-session-awake-monitor
+  test-session-awake-restore-and-disposal
+  test-session-awake-checkpoint-quiescence)
+
+(define-test-suite planner
+  test-planner-incremental-turn-and-restart
+  test-planner-pairing-and-bypass
+  test-planner-failure-and-durable-acknowledgment
+  test-planner-bounds-and-shared-budget
+  test-planner-mission-admission
+  test-planner-registration-and-command)
 
 (define-test-suite mission-review
   test-mission-review-checkpoint-lifecycle

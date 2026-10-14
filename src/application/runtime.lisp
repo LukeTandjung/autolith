@@ -489,25 +489,25 @@ model's effort choice to CONFIGURATION--CLONE."
 (-> application--refresh-task-presentation-locked
     (application task-orchestrator)
     null)
+
+
 (defun application--refresh-task-presentation-locked (application orchestrator)
   "Project ORCHESTRATOR's live session jobs while APPLICATION's task lock is held."
-  (when (eq orchestrator
-            (application-task-presentation-orchestrator application))
-    (let ((ui
-            (and (slot-boundp application 'ui)
-                 (application-ui application))))
+  (sidebar-attach application)
+  (when (eq orchestrator (application-task-presentation-orchestrator application))
+    (let ((ui (and (slot-boundp application 'ui) (application-ui application))))
       (when (typep ui 'terminal-ui)
         (let ((activities (task-orchestrator-live-activities orchestrator)))
-          (terminal-ui-set-agent-activities
-           ui
-           (remove-if-not (lambda (activity)
-                            (eq (getf activity :type) ':task))
-                          activities))
-          (terminal-ui-set-command-activities
-           ui
-           (remove-if-not (lambda (activity)
-                            (eq (getf activity :type) ':tool))
-                          activities))))))
+          (terminal-ui-set-agent-activities ui
+                                            (remove-if-not
+                                             (lambda (activity)
+                                               (eq (getf activity :type) ':task))
+                                             activities))
+          (terminal-ui-set-command-activities ui
+                                              (remove-if-not
+                                               (lambda (activity)
+                                                 (eq (getf activity :type) ':tool))
+                                               activities))))))
   nil)
 
 (-> application--wake-input-controller (application) null)

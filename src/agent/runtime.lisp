@@ -1609,6 +1609,16 @@ Return the number of requests issued so the turn's request count covers them."
              :provider-requests issued)))
     issued))
 
+(-> agent-before-provider-request (t t) null)
+(defgeneric agent-before-provider-request (agent observer)
+  (:documentation
+   "Prepare AGENT for an executor provider request, excluding compaction requests."))
+
+(defmethod agent-before-provider-request ((agent t) (observer t))
+  "Leave ordinary provider requests unchanged when no preparation is required."
+  (declare (ignore agent observer))
+  nil)
+
 (-> agent--run-provider-loop
     (agent agent-observer &key (:goal-context (option string))
                           (:tools-p boolean)
@@ -1698,6 +1708,7 @@ loop, so compaction ahead of the user message shares the turn's budget."
                             (not tool-restriction-p)
                             (mcp-tool-registry-context-contributions
                              (agent-tool-registry agent)))))
+                    (agent-before-provider-request agent observer)
                      (provider-stream-turn
                       (agent-provider agent)
                       conversation

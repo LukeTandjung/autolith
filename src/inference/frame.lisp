@@ -432,9 +432,12 @@ returns the billable tokens settled so far."
                  (:source-registry (option tool-registry))
                  (:activity-callback (option function)))
     (values t string (integer 0)))
+
+
 (defun infer
-    (task &key context (contract ':text) budget capabilities model effort
-               provider configuration source-registry activity-callback)
+       (task
+        &key context (contract ':text) budget capabilities model effort provider
+        configuration source-registry activity-callback)
   "Run one bounded inference frame over CONTEXT and return TASK's value.
 
 CONTEXT is a list of view designators materialized once for the frame.
@@ -449,33 +452,33 @@ trace conversation identifier and the third is the frame's settled
 billable token spend. Contract violations are repaired by re-asking.
 Budget exhaustion signals RLM-PARTIAL-RESULT, a subtype of RLM-BUDGET-EXHAUSTED,
 with bounded public outputs and a durable trace, never an unvalidated answer."
-  (unless (non-empty-string-p task)
-    (error 'rlm-inference-error
-           :message "An inference frame requires a non-empty task."))
-  (unless (member capabilities '(nil :read))
-    (error 'rlm-inference-error
-           :task task
-           :message "Frame capabilities are NIL or :READ."))
-  (multiple-value-bind (provider configuration)
-      (rlm--resolve-environment :model model :effort effort
-                                :provider provider
-                                :configuration configuration)
-    (let* ((views (rlm-views-materialize
-                   (rlm--context-designators context)))
-           (contract (rlm-contract-normalize contract))
-           (budget (or budget (rlm-budget-create)))
-           (conversation (rlm--frame-conversation configuration))
-           (request (rlm--frame-request
-                     task views (rlm--contract-instructions contract)))
-           (*system-prompt-override* (rlm--frame-prompt capabilities)))
-      (handler-case
+  (rlm-call-with-observation ':rlm activity-callback
+   (lambda (activity-callback)
+     (unless (non-empty-string-p task)
+       (error 'rlm-inference-error :message
+              "An inference frame requires a non-empty task."))
+     (unless (member capabilities '(nil :read))
+       (error 'rlm-inference-error :task task :message
+              "Frame capabilities are NIL or :READ."))
+     (multiple-value-bind (provider configuration)
+         (rlm--resolve-environment :model model :effort effort :provider provider
+                                   :configuration configuration)
+       (let* ((views (rlm-views-materialize (rlm--context-designators context)))
+              (contract (rlm-contract-normalize contract))
+              (budget (or budget (rlm-budget-create)))
+              (conversation
+               (rlm-note-conversation (rlm--frame-conversation configuration)))
+              (request
+               (rlm--frame-request task views (rlm--contract-instructions contract)))
+              (*system-prompt-override* (rlm--frame-prompt capabilities)))
+         (handler-case
           (if (eq capabilities ':read)
-              (rlm--run-framed-inference
-               task request contract budget provider configuration conversation
-               (or source-registry (rlm--environment-registry))
-               :activity-callback activity-callback)
-              (rlm--run-direct-inference
-               task request contract budget provider conversation
-               :activity-callback activity-callback))
-        (rlm-budget-exhausted (condition)
-          (rlm--signal-partial condition conversation budget))))))
+              (rlm--run-framed-inference task request contract budget provider
+                                         configuration conversation
+                                         (or source-registry (rlm--environment-registry))
+                                         :activity-callback activity-callback)
+              (rlm--run-direct-inference task request contract budget provider
+                                         conversation :activity-callback
+                                         activity-callback))
+          (rlm-budget-exhausted (condition)
+           (rlm--signal-partial condition conversation budget))))))))

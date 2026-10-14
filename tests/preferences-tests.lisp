@@ -60,7 +60,7 @@ Source precedence, source recording, and value rejection belong to setinka."
            (dolist (case '((:reasoning-traces-p nil) (:compact-view-p t)
                            (:turn-timestamps-p nil) (:cache-miss-notices-p nil)
                            (:simple-technical-english-p nil)
-                           (:session-title-generation-p t) (:fullscreen-p nil)
+                           (:session-title-generation-p t) (:fullscreen-p t)
                            (:codex-fast-mode-p nil) (:permission-mode nil)))
              (destructuring-bind (name expected) case
                (test-assert (eq (config name created) expected)
@@ -74,15 +74,17 @@ Source precedence, source recording, and value rejection belong to setinka."
                (preferences-tests--file-plist configuration)
              (test-assert (and version-8-p (eq (getf plist :reasoning-traces-p) t))
                           "a durable change writes a version 8 record"))
-           (setf (config :model created) "gpt-5.6-luna"
-                 (config :reasoning-effort created) "high"
-                 (config :permission-mode created) ':ask)
-           (let ((reloaded (preferences-tests--create configuration)))
-             (test-assert (and (config :reasoning-traces-p reloaded)
-                               (string= (config :model reloaded) "gpt-5.6-luna")
-                               (string= (config :reasoning-effort reloaded) "high")
-                               (eq (config :permission-mode reloaded) ':ask))
-                          "durable values survive into a new configuration"))
+            (setf (config :model created) "gpt-5.6-luna"
+                  (config :reasoning-effort created) "high"
+                  (config :permission-mode created) ':ask
+                  (config :fullscreen-p created) nil)
+            (let ((reloaded (preferences-tests--create configuration)))
+              (test-assert (and (config :reasoning-traces-p reloaded)
+                                (string= (config :model reloaded) "gpt-5.6-luna")
+                                (string= (config :reasoning-effort reloaded) "high")
+                                (eq (config :permission-mode reloaded) ':ask)
+                                (null (config :fullscreen-p reloaded)))
+                           "durable values, including fullscreen optout, survive reload"))
            (setf (config :permission-mode created) nil)
            (test-assert (null (config :permission-mode (preferences-tests--create configuration)))
                         "an optional choice can be unset durably")

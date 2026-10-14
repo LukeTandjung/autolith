@@ -644,10 +644,12 @@ paths that do not contain QUERY as a contiguous substring."
                (application-configuration application))))))
   application)
 
+
 (defmethod initialize-instance :after ((application application) &key)
   "Connect a newly initialized APPLICATION to operation completion and transcript clicks."
   (application-operation-connect-ui application)
-  (application-connect-transcript-actions application))
+  (application-connect-transcript-actions application)
+  (sidebar-attach application))
 
 (-> application-operation-command-hint-form (application-command-invocation) string)
 (defun application-operation-command-hint-form (invocation)

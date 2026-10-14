@@ -131,7 +131,7 @@
                                         :start parameter-start
                                         :end separator
                                         :junk-allowed t)
-             thereis (member value '(47 1047 1049))
+             thereis (not (null (member value '(47 1047 1049))))
              while (< separator end)
              do (setf parameter-start (1+ separator)))))
 

@@ -349,7 +349,7 @@
 (-> test-localgroup-abandoned-session-exit () null)
 
 (defun test-localgroup-abandoned-session-exit ()
-  "Test sessions exiting when their client vanishes without an explicit detach."
+  "Test persistence optout, explicit detach and first-attach abandonment."
   (let* ((configuration (test-configuration))
          (root (test-configuration-root configuration))
          (application nil)
@@ -363,6 +363,15 @@
           (setf (application-goal application)
                   (list :objective "keep working" :status ':active :continuations 0))
           (application-input-controller--enqueue controller ':message "queued input")
+          (localgroup--note-controller-attached session)
+          (test-assert
+           (and (config :persistent-sessions-p configuration)
+                (not (localgroup--controller-lost session))
+                (null (application-input-controller-exit-reason controller))
+                (equal (deque->list (application-input-controller-work-items controller))
+                       '((:message "queued input"))))
+           "default persistence preserves a busy session and queued input")
+          (setf (config :persistent-sessions-p configuration) nil)
           (test-assert
            (and (localgroup--controller-lost session)
                 (eq (application-input-controller-exit-reason controller)
@@ -375,6 +384,7 @@
          (controller nil)
          (socket nil)
          (attachment nil))
+    (setf (config :persistent-sessions-p configuration) nil)
     (unwind-protect
         (multiple-value-bind (fixture-application fixture-controller relay session)
             (test-localgroup--abandonment-fixture configuration)
