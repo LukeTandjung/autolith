@@ -108,6 +108,7 @@
               base-configuration :working-directory
               working-directory)))
          (project-skills (merge-pathnames ".autolith/skills/" project))
+         (pi-skills (merge-pathnames ".pi/skills/" project))
           (user-skills
             (merge-pathnames
              "skills/"
@@ -117,30 +118,14 @@
          (progn
            (let ((roots (skill-roots configuration)))
              (test-assert
-              (= (length roots) 5)
-              "skill discovery has project, user, shared, site, and bundled roots")
-             (test-assert
-              (equal (first roots) project-skills)
-              "only the effective Git root supplies project-local skills")
-             (test-assert
-              (equal (second roots) user-skills)
-              "the XDG Autolith skill root follows the project root")
-             (test-assert
-              (equal (third roots)
-                     (merge-pathnames ".agents/skills/" (user-homedir-pathname)))
-              "the shared ~/.agents/skills root follows the Autolith user root")
-             (test-assert
-              (equal
-               (fourth roots)
-               site-skills)
-              "the site skill root follows the shared user root")
-             (test-assert
-              (equal
-               (fifth roots)
-               (merge-pathnames
-                "skills/"
-                (config :source-root configuration)))
-              "the optional bundled root has lowest precedence"))
+              (equal roots
+                     (list project-skills pi-skills user-skills
+                           (merge-pathnames ".agents/skills/"
+                                            (user-homedir-pathname))
+                           site-skills
+                           (merge-pathnames "skills/"
+                                            (config :source-root configuration))))
+              "project Autolith and Pi roots precede user, shared, site and bundled roots"))
            (skill-tests--write
             project-skills
             "winner/SKILL.sexp"
@@ -148,6 +133,18 @@
              "winner"
              "Project definition."
              "Project instructions."))
+           (skill-tests--write
+            pi-skills "winner/SKILL.md"
+            (skill-tests--agent-definition "winner" "Pi definition."
+                                           "Pi instructions."))
+           (skill-tests--write
+            pi-skills "pi-over-user/SKILL.md"
+            (skill-tests--agent-definition "pi-over-user" "Pi definition."
+                                           "Pi instructions."))
+           (skill-tests--write
+            user-skills "pi-over-user/SKILL.md"
+            (skill-tests--agent-definition "pi-over-user" "User definition."
+                                           "User instructions."))
            (skill-tests--write
             user-skills
             "winner/SKILL.sexp"
@@ -225,6 +222,25 @@
                    (string= (skill-metadata-read standard)
                             "Standard instructions."))
               "Autolith discovers and reads standard Skills through cl-skills")
+             (test-assert
+              (equal (skill-metadata-pathname
+                      (skill-catalog-find catalog "pi-over-user"))
+                     (platform-truename
+                      *platform* (merge-pathnames "pi-over-user/SKILL.md" pi-skills)))
+              "Pi project skills override user skills")
+             (skill-tests--write
+              pi-skills "pi-added/SKILL.md"
+              (skill-tests--agent-definition "pi-added" "Added Pi skill."
+                                             "New instructions."))
+             (test-assert
+              (skill-catalog-find (skill-catalog-for-configuration configuration)
+                                  "pi-added")
+              "new Pi project skills appear in the next discovery")
+             (delete-file (merge-pathnames "pi-added/SKILL.md" pi-skills))
+             (test-assert
+              (null (skill-catalog-find
+                     (skill-catalog-for-configuration configuration) "pi-added"))
+              "removed Pi project skills disappear from the next discovery")
              (multiple-value-bind (rendered included omitted)
                  (skill-catalog-render catalog :character-budget 1500)
                (test-assert
