@@ -15,6 +15,33 @@
   "Encode POSIX path bytes, preserving literal backslashes as escaped filename characters."
   (concatenate 'string "file://" (platform--encode-uri-path (uiop:native-namestring pathname))))
 
+(defmethod platform-sleep-inhibitor-backend ((platform posix-platform))
+  "Select macOS or Linux sleep inhibition, or report an unsupported POSIX host."
+  (declare (ignore platform))
+  (cond
+    ((uiop:os-macosx-p)
+     ':darwin)
+    ((member :linux *features*)
+     ':linux)
+    (t
+     ':unsupported)))
+
+(defmethod platform-sleep-inhibitor-command ((platform posix-platform) owner-process-id)
+  "Bind the host sleep inhibitor to OWNER-PROCESS-ID, including abrupt owner exit."
+  (check-type owner-process-id (integer 1 *))
+  (let ((owner (format nil "~D" owner-process-id)))
+    (case (platform-sleep-inhibitor-backend platform)
+      (:darwin
+       (list "/usr/bin/caffeinate" "-i" "-w" owner))
+      (:linux
+       (list "systemd-inhibit" "--what=idle:sleep" "--who=Autolith"
+             "--why=An Autolith session is running" "--mode=block"
+             "tail" (concatenate 'string "--pid=" owner) "-f" "/dev/null"))
+      (otherwise
+       (error 'platform-capability-unavailable
+              :capability ':sleep-inhibition
+              :message "No sleep-inhibition backend is installed for this host.")))))
+
 
 ;;;; -- Failure Translation --
 

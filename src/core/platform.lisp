@@ -174,6 +174,21 @@ suspended initial thread and a native Job Object. Return an owned process object
   (declare (ignore platform))
   (uiop:wait-process process))
 
+(defgeneric platform-sleep-inhibitor-backend (platform)
+  (:documentation "Return the host sleep-inhibition backend keyword."))
+
+(defgeneric platform-sleep-inhibitor-command (platform owner-process-id)
+  (:documentation
+   "Return a sleep-inhibitor command which releases when OWNER-PROCESS-ID exits."))
+
+(defgeneric platform-launch-sleep-inhibitor (platform command)
+  (:documentation "Launch COMMAND and return an owned sleep-inhibitor process."))
+
+(defmethod platform-launch-sleep-inhibitor ((platform platform) command)
+  "Launch a quiet, independently owner-bound host helper."
+  (declare (ignore platform))
+  (uiop:launch-program command :input nil :output nil :error-output nil))
+
 
 ;;;; -- Environment --
 

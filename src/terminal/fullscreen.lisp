@@ -112,11 +112,18 @@ sequence, so it lands in the normal screen where it stays readable."
 ;;;; -- Incremental Transcript and Reflow --
 
 (-> terminal-ui-fullscreen--ensure-width (fullscreen-terminal-ui integer) null)
-(defun terminal-ui-fullscreen--ensure-width (ui width)
-  "Reflow the transcript only after a width change, keeping its visible anchor."
-  (when (clinedi:transcript-viewport-resize (fullscreen-terminal-ui-viewport ui) width)
-    (terminal-ui-fullscreen-invalidate ui))
-  nil)
+
+
+(progn
+ (defgeneric terminal-ui-fullscreen--ensure-width
+     (ui width)
+   (:documentation
+    "Reflow the transcript only after a width change, keeping its visible anchor."))
+ (defmethod terminal-ui-fullscreen--ensure-width ((ui fullscreen-terminal-ui) width)
+   "Reflow the transcript only after a width change, keeping its visible anchor."
+   (when (clinedi:transcript-viewport-resize (fullscreen-terminal-ui-viewport ui) width)
+     (terminal-ui-fullscreen-invalidate ui))
+   nil))
 
 (-> terminal-ui-fullscreen--append
     (fullscreen-terminal-ui string string &optional list)
@@ -198,40 +205,68 @@ composer's dim placeholder without reading as a second modeline."
     (terminal--render-spans (terminal-ui-terminal ui)
                             (terminal--clip-spans spans width))))
 
-(-> terminal-ui-fullscreen--frame (fullscreen-terminal-ui (option real))
+
+(-> terminal-ui-fullscreen--frame
+    (fullscreen-terminal-ui (option real) &optional (option integer))
     (values list integer integer))
-(defun terminal-ui-fullscreen--frame (ui status-now)
-  "Compose only visible transcript rows above a fixed-bottom composer."
-  (let* ((terminal (terminal-ui-terminal ui))
-         (width (max 1 (terminal-columns terminal)))
-         (height (max 1 (terminal-rows terminal))))
-    (terminal-ui-fullscreen--ensure-width ui width)
-    (multiple-value-bind (composer cursor-row cursor-column)
-        (terminal-ui-fullscreen--composer ui width height)
-      (let* ((viewport (fullscreen-terminal-ui-viewport ui))
-             (separator-p (> height (length composer)))
-             (space (max 0 (- height (length composer) (if separator-p 1 0))))
-             (committed (clinedi:transcript-viewport-row-count viewport))
-             (live (coerce (terminal-ui-fullscreen--display-rows
-                            ui (terminal-ui--live-prefix-rows ui status-now) width) 'vector))
-             (total (+ committed (length live)))
-             (top (clinedi:transcript-viewport-layout viewport space
-                                                      :extra-rows (length live)))
-             (visible
+
+
+(progn
+ (defgeneric terminal-ui-fullscreen--frame
+     (ui status-now &optional requested-width)
+   (:documentation
+    "Compose only visible transcript rows above a fixed-bottom composer."))
+ (defmethod terminal-ui-fullscreen--frame
+            ((ui fullscreen-terminal-ui) status-now &optional requested-width)
+   "Compose only visible transcript rows above a fixed-bottom composer."
+   (let* ((terminal (terminal-ui-terminal ui))
+          (width (max 1 (or requested-width (terminal-columns terminal))))
+          (height (max 1 (terminal-rows terminal))))
+     (terminal-ui-fullscreen--ensure-width ui width)
+     (multiple-value-bind (composer cursor-row cursor-column)
+         (terminal-ui-fullscreen--composer ui width height)
+       (let* ((viewport (fullscreen-terminal-ui-viewport ui))
+              (separator-p (> height (length composer)))
+              (space
+               (max 0
+                    (- height (length composer)
+                       (if separator-p
+                           1
+                           0))))
+              (committed (clinedi:transcript-viewport-row-count viewport))
+              (live
+               (coerce
+                (terminal-ui-fullscreen--display-rows ui
+                                                      (terminal-ui--live-prefix-rows ui
+                                                                                     status-now)
+                                                      width)
+                'vector))
+              (total (+ committed (length live)))
+              (top
+               (clinedi:transcript-viewport-layout viewport space :extra-rows
+                                                   (length live)))
+              (visible
                (if (and (zerop total) (terminal-ui-fullscreen-welcome-p ui))
                    (terminal-ui--welcome-rows ui space)
                    (loop for index from top below (min total (+ top space))
                          collect (if (< index committed)
-                                     (clinedi:transcript-viewport-row-display viewport index)
+                                     (clinedi:transcript-viewport-row-display viewport
+                                                                              index)
                                      (aref live (- index committed)))))))
-        (values
-         (append visible (make-list (max 0 (- space (length visible))) :initial-element "")
-                 (when separator-p
-                   (list (terminal-ui-fullscreen--legend-row
-                          ui
-                          :top top :total total :space space :width width)))
-                 composer)
-         (+ space (if separator-p 1 0) cursor-row) cursor-column)))))
+         (values
+          (append visible
+                  (make-list (max 0 (- space (length visible))) :initial-element "")
+                  (when separator-p
+                    (list
+                     (terminal-ui-fullscreen--legend-row ui :top top :total total :space
+                                                         space :width width)))
+                  composer)
+          (+ space
+             (if separator-p
+                 1
+                 0)
+             cursor-row)
+          cursor-column))))))
 
 
 ;;;; -- Physical Frames and Navigation --
@@ -303,18 +338,29 @@ the viewport does not move."
 (-> terminal-ui-fullscreen--click-action
     (fullscreen-terminal-ui integer integer)
     list)
-(defun terminal-ui-fullscreen--click-action (ui column row)
-  "Return the transcript action under one-based screen COLUMN and ROW, or NIL.
+
+
+(progn
+ (defgeneric terminal-ui-fullscreen--click-action
+     (ui column row)
+   (:documentation
+    "Return the transcript action under one-based screen COLUMN and ROW, or NIL.
+
+A widget region covering the clicked committed character wins, otherwise a
+web URL under it opens. Live rows, the separator, and the composer have no
+actions."))
+ (defmethod terminal-ui-fullscreen--click-action ((ui fullscreen-terminal-ui) column row)
+   "Return the transcript action under one-based screen COLUMN and ROW, or NIL.
 
 A widget region covering the clicked committed character wins, otherwise a
 web URL under it opens. Live rows, the separator, and the composer have no
 actions."
-  (multiple-value-bind (action text index)
-      (clinedi:transcript-viewport-hit (fullscreen-terminal-ui-viewport ui) column row)
-    (when index
-      (or action
-          (let ((url (url-at text index)))
-            (and url (list ':open-url url)))))))
+   (multiple-value-bind (action text index)
+       (clinedi:transcript-viewport-hit (fullscreen-terminal-ui-viewport ui) column row)
+     (when index
+       (or action
+           (let ((url (url-at text index)))
+             (and url (list ':open-url url))))))))
 
 (-> terminal-ui-fullscreen--click (fullscreen-terminal-ui integer integer) boolean)
 (defun terminal-ui-fullscreen--click (ui column row)
@@ -328,37 +374,43 @@ lock, because copying and browser launches present notices of their own."
     (not (null action))))
 
 (-> terminal-ui-fullscreen-handle-event (fullscreen-terminal-ui t) boolean)
-(defun terminal-ui-fullscreen-handle-event (ui event)
-  "Consume viewport navigation without changing the draft or its history position."
-  (block nil
-    (cond
+
+
+(progn
+ (defgeneric terminal-ui-fullscreen-handle-event
+     (ui event)
+   (:documentation
+    "Consume viewport navigation without changing the draft or its history position."))
+ (defmethod terminal-ui-fullscreen-handle-event ((ui fullscreen-terminal-ui) event)
+   "Consume viewport navigation without changing the draft or its history position."
+   (block nil
+     (cond
       ((eq event ':page-up)
-       (terminal-ui-fullscreen-scroll
-        ui (- (clinedi:transcript-viewport-page-rows (fullscreen-terminal-ui-viewport ui)))))
+       (terminal-ui-fullscreen-scroll ui
+                                      (-
+                                       (clinedi:transcript-viewport-page-rows
+                                        (fullscreen-terminal-ui-viewport ui)))))
       ((eq event ':page-down)
-       (terminal-ui-fullscreen-scroll
-        ui (clinedi:transcript-viewport-page-rows (fullscreen-terminal-ui-viewport ui))))
+       (terminal-ui-fullscreen-scroll ui
+                                      (clinedi:transcript-viewport-page-rows
+                                       (fullscreen-terminal-ui-viewport ui))))
       ((eq event ':scroll-top)
        (clinedi:transcript-viewport-scroll-to-top (fullscreen-terminal-ui-viewport ui))
        (terminal-ui--paint-live ui))
-      ((eq event ':scroll-bottom)
-       (terminal-ui-fullscreen-bottom ui))
-      ((eq event ':previous-section)
-       (terminal-ui-fullscreen-jump-message ui -1))
-      ((eq event ':next-section)
-       (terminal-ui-fullscreen-jump-message ui 1))
+      ((eq event ':scroll-bottom) (terminal-ui-fullscreen-bottom ui))
+      ((eq event ':previous-section) (terminal-ui-fullscreen-jump-message ui -1))
+      ((eq event ':next-section) (terminal-ui-fullscreen-jump-message ui 1))
       ((and (consp event) (eq (first event) ':scroll) (member (second event) '(-1 1)))
        (terminal-ui-fullscreen-scroll ui (* 3 (second event))))
       ((typep event '(cons (eql :click) (cons (integer 1) (cons (integer 1) null))))
        (terminal-ui-fullscreen--click ui (second event) (third event)))
-      ((eq event ':clear-screen)
-       (terminal-ui-fullscreen-invalidate ui)
+      ((eq event ':clear-screen) (terminal-ui-fullscreen-invalidate ui)
        (terminal-ui--paint-live ui))
       (t
        (when (and (consp event) (member (first event) '(:insert :paste :line)))
          (setf (terminal-ui-fullscreen-welcome-p ui) nil))
        (return nil)))
-    t))
+     t)))
 
 
 ;;;; -- Presentation Transactions --

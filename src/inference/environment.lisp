@@ -354,11 +354,13 @@ PREVIOUS-LOST-P notes that an earlier environment's state is gone."
                  (:environment-owner (option configuration))
                  (:activity-callback (option function)))
     (values t string))
+
+
 (defun rlm-complete
-    (task &key context budget model effort provider configuration
-               (environment-owner
-                 (or configuration (nth-value 1 (rlm--environment))))
-               activity-callback)
+       (task
+        &key context budget model effort provider configuration
+        (environment-owner (or configuration (nth-value 1 (rlm--environment))))
+        activity-callback)
   "Run TASK as the root of a recursive language model over CONTEXT.
 
 CONTEXT is one context designator interned as an immutable content-addressed
@@ -370,139 +372,122 @@ Returns the value the environment recorded through finish plus the root trace
 conversation identifier. Budget exhaustion signals RLM-PARTIAL-RESULT and parks
 the environment for continuation. ENVIRONMENT-OWNER identifies the originating
 configuration before per-call model routing, so routing copies share its pool."
-  (unless (non-empty-string-p task)
-    (error 'rlm-inference-error
-           :message "A root completion requires a non-empty task."))
-  (multiple-value-bind (provider configuration)
-      (rlm--resolve-environment :model model :effort effort
-                                :provider provider
-                                :configuration configuration)
-    (let* ((object (rlm-context-designator-object configuration context))
-           (budget (or budget
-                       (rlm-budget-create
-                        :calls *rlm-complete-call-budget*
-                        :tokens *rlm-complete-token-budget*
-                        :depth *rlm-complete-depth-budget*)))
-           (conversation (rlm--frame-conversation configuration))
-           (endpoint (rlm-endpoint-start
-                      :provider provider
-                      :configuration configuration
-                      :budget budget
-                      ;; Metadata records are replay-safe, so the root trace
-                      ;; itself carries the run's invocation tree.
-                      :ledger
-                      (lambda (record)
-                        (conversation-append-provider-metadata
-                         conversation
-                         (list :rlm-call record)))
-                      :activity-callback activity-callback))
-           (worker nil)
-           (reused-p nil)
-           (previous-lost-p nil)
-           (parked-p nil))
-      (unwind-protect
-           (progn
-             (rlm--note-activity activity-callback "starting environment")
-             (multiple-value-bind (pooled lost-p)
-                 (rlm--environment-pool-claim object environment-owner)
-               (setf previous-lost-p lost-p)
-               (when pooled
-                 (setf worker pooled
-                       reused-p t)))
-             (labels ((prime (forms)
-                        "Evaluate prelude FORMS, signaling on any failure."
-                        (dolist (form forms)
-                          (let ((response
+  (rlm-call-with-observation ':root activity-callback
+   (lambda (activity-callback)
+     (unless (non-empty-string-p task)
+       (error 'rlm-inference-error :message
+              "A root completion requires a non-empty task."))
+     (multiple-value-bind (provider configuration)
+         (rlm--resolve-environment :model model :effort effort :provider provider
+                                   :configuration configuration)
+       (let* ((object (rlm-context-designator-object configuration context))
+              (budget
+               (or budget
+                   (rlm-budget-create :calls *rlm-complete-call-budget* :tokens
+                                      *rlm-complete-token-budget* :depth
+                                      *rlm-complete-depth-budget*)))
+              (conversation
+               (rlm-note-conversation (rlm--frame-conversation configuration)))
+              (endpoint
+               (rlm-endpoint-start :provider provider :configuration configuration
+                                   :budget budget :ledger
+                                   (lambda (record)
+                                     (conversation-append-provider-metadata conversation
+                                                                            (list
+                                                                             :rlm-call
+                                                                             record)))
+                                   :activity-callback activity-callback))
+              (worker nil)
+              (reused-p nil)
+              (previous-lost-p nil)
+              (parked-p nil))
+         (unwind-protect
+             (progn
+              (rlm--note-activity activity-callback "starting environment")
+              (multiple-value-bind (pooled lost-p)
+                  (rlm--environment-pool-claim object environment-owner)
+                (setf previous-lost-p lost-p)
+                (when pooled
+                  (setf worker pooled
+                        reused-p t)))
+              (labels ((prime (forms)
+                         "Evaluate prelude FORMS, signaling on any failure."
+                         (dolist (form forms)
+                           (let ((response
                                   (lisp-worker-request worker ':eval
                                                        (list :forms (list form)))))
-                            (unless (eq (getf (rest response) ':status) ':ok)
-                              (error 'rlm-inference-error
-                                     :task task
-                                     :message
-                                     (format nil "The environment prelude failed: ~A"
-                                             (getf (rest response) ':message)))))))
-
-                      (start-fresh ()
-                        "Boot and prime one fresh environment worker."
-                        (setf worker (lisp-worker-create
-                                      configuration
-                                      :name "rlm-environment"))
-                        (lisp-worker-start worker)
-                        (prime (list "(require :sb-bsd-sockets)"
-                                     (rlm--environment-prelude endpoint
-                                                               object)))))
-               (if reused-p
-                   (handler-case
-                       (prime (list (rlm--environment-reprime endpoint)))
-                     (error ()
-                       ;; A wedged reused environment falls back to a fresh
-                       ;; worker instead of failing the whole run.
-                       (ignore-errors (lisp-worker-stop worker))
-                       (setf worker nil
-                             reused-p nil
-                             previous-lost-p t)
-                       (start-fresh)))
-                   (start-fresh)))
-             (multiple-value-bind (status-callback flush-tranche)
-                 (rlm--frame-budget-callback
-                  budget task :activity-callback activity-callback)
-               (let* ((registry (make-instance 'tool-registry))
-                      (agent
-                        (make-instance 'rlm-root-agent
-                                       :configuration configuration
-                                       :provider provider
-                                       :conversation conversation
-                                       :tool-registry registry
-                                       :worker nil
-                                       :endpoint endpoint))
-                      (observer
-                        (make-instance 'callback-agent-observer
-                                       :status-callback status-callback))
-                      (request (rlm--root-request
-                                task object
-                                :reused-p reused-p
-                                :persisted-names
-                                (and reused-p
-                                     (rlm--environment-persisted-names
-                                      worker))
-                                :previous-lost-p previous-lost-p))
-                      (*system-prompt-override* *rlm-root-system-prompt*))
-                 (tool-registry-register registry
-                                         (rlm-environment-tool-create worker))
-                 (handler-case
-                     (loop
-                       (let ((*agent-restricted-maximum-tool-rounds*
-                               (max 1 (rlm-budget-remaining-calls budget)))
-                             (*provider-maximum-output-tokens* nil))
-                         (unwind-protect
-                              (agent-run-user-turn agent request
-                                                   :observer observer
-                                                   :tool-allowlist (list "env.eval")
-                                                   :tool-restriction-p t)
-                           (funcall flush-tranche)))
-                       (multiple-value-bind (value final-p)
-                           (rlm-endpoint-final endpoint)
-                         (when final-p
-                           (rlm--environment-pool-park object environment-owner worker)
-                           (setf parked-p t)
-                           (return (values value
-                                           (conversation-identifier conversation)))))
-                       (setf request
-                             "No final value is recorded yet. Continue from the environment's evidence. When the answer is complete, call (finish value) exactly once."))
+                             (unless (eq (getf (rest response) ':status) ':ok)
+                               (error 'rlm-inference-error :task task :message
+                                      (format nil "The environment prelude failed: ~A"
+                                              (getf (rest response) ':message)))))))
+                       (start-fresh ()
+                         "Boot and prime one fresh environment worker."
+                         (setf worker
+                                 (lisp-worker-create configuration :name
+                                                     "rlm-environment"))
+                         (lisp-worker-start worker)
+                         (prime
+                          (list "(require :sb-bsd-sockets)"
+                                (rlm--environment-prelude endpoint object)))))
+                (if reused-p
+                    (handler-case (prime (list (rlm--environment-reprime endpoint)))
+                                  (error nil (ignore-errors (lisp-worker-stop worker))
+                                         (setf worker nil
+                                               reused-p nil
+                                               previous-lost-p t)
+                                         (start-fresh)))
+                    (start-fresh)))
+              (multiple-value-bind (status-callback flush-tranche)
+                  (rlm--frame-budget-callback budget task :activity-callback
+                                              activity-callback)
+                (let* ((registry (make-instance 'tool-registry))
+                       (agent
+                        (make-instance 'rlm-root-agent :configuration configuration
+                                       :provider provider :conversation conversation
+                                       :tool-registry registry :worker nil :endpoint
+                                       endpoint))
+                       (observer
+                        (make-instance 'callback-agent-observer :status-callback
+                                       status-callback))
+                       (request
+                        (rlm--root-request task object :reused-p reused-p
+                                           :persisted-names
+                                           (and reused-p
+                                                (rlm--environment-persisted-names
+                                                 worker))
+                                           :previous-lost-p previous-lost-p))
+                       (*system-prompt-override* *rlm-root-system-prompt*))
+                  (tool-registry-register registry (rlm-environment-tool-create worker))
+                  (handler-case
+                   (loop
+                    (let ((*agent-restricted-maximum-tool-rounds*
+                           (max 1 (rlm-budget-remaining-calls budget)))
+                          (*provider-maximum-output-tokens* nil))
+                      (unwind-protect
+                          (agent-run-user-turn agent request :observer observer
+                                               :tool-allowlist (list "env.eval")
+                                               :tool-restriction-p t)
+                        (funcall flush-tranche)))
+                    (multiple-value-bind (value final-p)
+                        (rlm-endpoint-final endpoint)
+                      (when final-p
+                        (rlm--environment-pool-park object environment-owner worker)
+                        (setf parked-p t)
+                        (return (values value (conversation-identifier conversation)))))
+                    (setf request
+                            "No final value is recorded yet. Continue from the environment's evidence. When the answer is complete, call (finish value) exactly once."))
                    (rlm-budget-exhausted (condition)
-                     (let ((names (rlm--environment-persisted-names worker)))
-                       (rlm--environment-pool-park object environment-owner worker)
-                       (setf parked-p t)
-                       (multiple-value-bind (value final-p)
-                           (rlm-endpoint-final endpoint)
-                         (if final-p
-                             (values value (conversation-identifier conversation))
-                             (rlm--signal-partial
-                              condition conversation budget
-                              :context (format nil "context:~A"
-                                               (rlm-context-object-digest object))
-                              :environment names)))))))))
-        (unless parked-p
-          (when worker
-            (ignore-errors (lisp-worker-stop worker))))
-        (rlm-endpoint-stop endpoint)))))
+                    (let ((names (rlm--environment-persisted-names worker)))
+                      (rlm--environment-pool-park object environment-owner worker)
+                      (setf parked-p t)
+                      (multiple-value-bind (value final-p)
+                          (rlm-endpoint-final endpoint)
+                        (if final-p
+                            (values value (conversation-identifier conversation))
+                            (rlm--signal-partial condition conversation budget :context
+                                                 (format nil "context:~A"
+                                                         (rlm-context-object-digest
+                                                          object))
+                                                 :environment names)))))))))
+           (unless parked-p (when worker (ignore-errors (lisp-worker-stop worker))))
+           (rlm-endpoint-stop endpoint)))))))

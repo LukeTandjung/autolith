@@ -141,16 +141,20 @@ leaves a machine-readable invocation tree instead of orphaned frames."
 (-> rlm-endpoint--operation-activity-callback
     (rlm-endpoint keyword)
     (option function))
+
+
 (defun rlm-endpoint--operation-activity-callback (endpoint operation)
   "Return ENDPOINT's revocable activity callback for proxied OPERATION."
-  (let ((callback (rlm-endpoint--activity-callback endpoint)))
-    (when callback
-      (lambda (activity)
-        (with-lock-held ((rlm-endpoint--activity-lock endpoint))
-          (when (rlm-endpoint--activity-enabled-p endpoint)
-            (rlm--note-activity
-             callback
-             (format nil "~(~A~) · ~A" operation activity))))))))
+  (rlm-inherit-activity-callback
+   (progn
+    (let ((callback (rlm-endpoint--activity-callback endpoint)))
+      (when callback
+        (lambda (activity)
+          (with-lock-held ((rlm-endpoint--activity-lock endpoint))
+            (when (rlm-endpoint--activity-enabled-p endpoint)
+              (rlm--note-activity callback
+                                  (format nil "~(~A~) · ~A" operation activity))))))))
+   :parent (rlm-endpoint--activity-callback endpoint)))
 
 (-> rlm-endpoint--dispatch (rlm-endpoint keyword list) list)
 (defun rlm-endpoint--dispatch (endpoint operation arguments)

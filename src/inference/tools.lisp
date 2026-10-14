@@ -460,17 +460,20 @@ filesystem paths are only a programmatic Lisp designator."
                  0 *rlm-tool-maximum-depth-budget*)))))
 
 (-> rlm--tool-activity-callback (rlm-frame-tool tool-context) (option function))
+
+
 (defun rlm--tool-activity-callback (tool context)
   "Return a callback publishing TOOL's compact live inference activity."
-  (let ((observer (tool-context-observer context))
-        (tool-name (tool-canonical-name tool)))
-    (when observer
-      (lambda (activity)
-        (agent-observer-status
-         observer
-         ':tool-call-progress
-         (list ':tool tool-name
-               ':activity (format nil "~A · ~A" tool-name activity)))))))
+  (rlm-inherit-activity-callback
+   (progn
+    (let ((observer (tool-context-observer context))
+          (tool-name (tool-canonical-name tool)))
+      (when observer
+        (lambda (activity)
+          (agent-observer-status observer ':tool-call-progress
+                                 (list ':tool tool-name ':activity
+                                       (format nil "~A · ~A" tool-name activity)))))))
+   :viewer (tool-context-agent context)))
 
 (-> rlm--tool-routing-option (hash-table string) (option string))
 (defun rlm--tool-routing-option (arguments name)

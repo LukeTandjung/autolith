@@ -20,6 +20,20 @@
         (concatenate 'string "file:///" (subseq name 0 2)
                      (platform--encode-uri-path (subseq name 2))))))
 
+(defmethod platform-sleep-inhibitor-backend ((platform win32-platform))
+  "Use a PID-bound Windows execution-state helper."
+  (declare (ignore platform))
+  ':windows)
+
+(defmethod platform-sleep-inhibitor-command ((platform win32-platform) owner-process-id)
+  "Hold Windows sleep inhibition on one helper thread until its owner exits."
+  (declare (ignore platform))
+  (check-type owner-process-id (integer 1 *))
+  (list "powershell.exe" "-NoProfile" "-NonInteractive" "-Command"
+        (format nil
+                "Add-Type -TypeDefinition 'using System; using System.Diagnostics; using System.Runtime.InteropServices; public static class AutolithAwake { [DllImport(\"kernel32.dll\")] static extern uint SetThreadExecutionState(uint flags); public static void Hold(int pid) { using (var owner = Process.GetProcessById(pid)) { if (SetThreadExecutionState(0x80000001) == 0) throw new Exception(\"Sleep inhibition failed\"); try { owner.WaitForExit(); } finally { SetThreadExecutionState(0x80000000); } } } }'; [AutolithAwake]::Hold(~D)"
+                owner-process-id)))
+
 
 ;;;; -- Alien Bindings --
 

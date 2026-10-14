@@ -4255,7 +4255,7 @@
 (defun test-responsive-model-input ()
   "Test steering, follow-up queueing, and cursor stability during model turns."
   (let* ((*conversation-title-refresh-turn-count* most-positive-fixnum)
-         (configuration (test-configuration))
+         (configuration (configuration-copy (test-configuration) :fullscreen-p nil))
          (root (test-configuration-root configuration)))
     (unwind-protect
          (let* ((conversation

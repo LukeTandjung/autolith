@@ -285,3 +285,15 @@
  :model-discovery-endpoint *mistral-models-endpoint*
  :model-discovery-endpoint-resolver #'mistral-models-endpoint
  :source ':builtin)
+
+(register-provider
+ "ninfer"
+ :description "NInfer (unauthenticated Chat Completions)"
+ :family ':ninfer
+ :protocol ':chat-completions
+ :endpoint *ninfer-chat-completions-endpoint*
+ :factory #'ninfer-provider-create
+ :model-discovery #'ninfer--fetch-models
+ :model-discovery-endpoint (ninfer-models-endpoint)
+ :model-discovery-endpoint-resolver #'ninfer-models-endpoint
+ :source ':builtin)

@@ -347,17 +347,16 @@ without one."
 (-> localgroup--controller-lost (localgroup-session) boolean)
 
 (defun localgroup--controller-lost (session)
-  "Handle SESSION losing its controlling client and report whether it exits.
+  "Report whether SESSION exits after losing its controlling client.
 
-A session with no connection left lingers only when its controller left
-through an explicit detach. A closed window, a dropped connection, or a
-client that ended without detaching exits the session instead, so
-abandoned launches never accumulate as idle background processes. The
-exit persists pending input and cancels an active turn the way any
-forced shutdown does; the conversation stays resumable."
-  (let ((exit-p
-         (with-lock-held ((image-daemon:daemon-runtime-lock session))
-           (not (localgroup-session-detached-explicitly-p session)))))
+Explicit detach and persistent sessions survive disconnect. The separate
+first-attach watchdog still reclaims launches which never met their client."
+  (let* ((configuration (application-configuration
+                         (localgroup-session-application session)))
+         (exit-p
+           (with-lock-held ((image-daemon:daemon-runtime-lock session))
+             (and (not (localgroup-session-detached-explicitly-p session))
+                  (not (config :persistent-sessions-p configuration))))))
     (when exit-p (localgroup--exit-abandoned-session session))
     exit-p))
 

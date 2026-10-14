@@ -159,8 +159,13 @@ remaining selected revisions; interruption leaves them pending."
                   outcome)))))))))
 
 (-> application-startup-presentation
-    (application application-input-controller &key (:onboarding-p boolean)) keyword)
-(defun application-startup-presentation (application controller &key (onboarding-p t))
+    (application application-input-controller &key (:onboarding-p boolean)
+                                                  (:boot-screen-p boolean)) keyword)
+(defun application-startup-presentation
+    (application controller &key (onboarding-p t)
+                                 (boot-screen-p
+                                   (config :boot-screen-p
+                                           (application-configuration application))))
   "Present pending onboarding on interactive startup, otherwise the usual boot."
   (let* ((ui (application-ui application))
          (terminal (terminal-ui-terminal ui))
@@ -184,7 +189,7 @@ remaining selected revisions; interruption leaves them pending."
                      (not (application-input-controller-exit-requested-p controller)))
                 (application-onboard application :new-only-p t)
                 (terminal-ui-boot-sequence
-                 ui :screen-p (config :boot-screen-p configuration)
+                 ui :screen-p boot-screen-p
                  :duration (config :boot-screen-seconds configuration)
                  :linger-p (config :boot-screen-linger-p configuration)
                  :tip-seconds (config :boot-screen-tip-seconds configuration)

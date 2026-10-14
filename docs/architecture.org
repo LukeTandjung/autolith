@@ -329,6 +329,22 @@ application; annotated confirmations use the command-authorization boundary.
   shell sandbox. Server-driven workspace edits are declined; file changes use
   revision-gated resources. =cl-lsp= encodes language-server file URIs.
 
+** Session longevity
+
+=src/application/session-awake.lisp= owns the process-bound sleep helper and its
+liveness monitor. =src/startup/main.lisp= applies durable interactive policy after
+user configuration and releases ownership during shutdown. Host command selection
+and launch use the platform protocol in =src/core/platform*.lisp=.
+=src/localgroup/checkpoint.lisp= stops and reaps the helper and joins the monitor
+before saving, then restores ownership on return or rollback. Restore init hooks
+replace saved synchronization objects and forget inherited handles before new
+application threads start. The monitor attempts one replacement after helper loss
+and records a typed failure if recovery fails.
+
+=src/localgroup/runtime.lisp= applies =persistent-sessions-p= when an established
+controller disconnects. Explicit detach and the first-attach watchdog have
+separate lifecycle policies.
+
 ** Emacs and Slynk
 
 =src/slynk/endpoint.lisp= owns one process-wide Slynk server serving the active
@@ -350,11 +366,10 @@ lost. =src/emacs/tools.lisp= holds the action tools, =emacs.visit= and
 
 * Terminal
 
-Autolith uses the primary screen and leaves finalized output in normal
-scrollback by default. An opt-in fullscreen terminal UI owns the transcript
-viewport in an alternate screen, keeps application scrollback, and pins the
-composer to the bottom. The persistent setting is stored in the global
-preferences record; =--fullscreen= overrides it for one launch.
+Autolith uses an application-owned fullscreen transcript viewport by default,
+with a bottom-pinned composer. Set the persistent fullscreen preference to NIL
+for ordinary inline output and terminal scrollback; =--fullscreen= overrides
+the preference for one launch.
 
 - Reasoning previews enter scrollback only once finalized
 - Autolith provides semantic styling, candidate policy, terminal mode, and
@@ -368,6 +383,13 @@ preferences record; =--fullscreen= overrides it for one launch.
   reflow anchors, and bottom-pinned composer geometry
 - =PageUp= and =PageDown= page through fullscreen history; =Ctrl-Home= and
   =Ctrl-End= jump to its ends, and mouse-wheel events scroll incrementally
+- =src/terminal/sidebar.lisp= groups owned agent and RLM sessions in a left rail;
+  native fullscreen frame, geometry, click and event protocols compose it
+- =src/terminal/sidebar-view.lisp= resolves owned trace capabilities and renders
+  isolated read-only viewports, with 128-record paging and a four-view cache
+- =src/inference/observation.lisp= supplies inference lifecycle and callback
+  lineage hooks; durable trace links live in primary provider metadata
+- Primary conversation or workspace changes revoke cached trace capabilities
 - cl-colorist is used for ANSI capability detection
 - Text is sanitized before styles are added
 - Ctrl-C on an empty prompt exits.

@@ -3399,17 +3399,24 @@ thread."
   (terminal-read-event (terminal-ui-terminal ui)))
 
 (-> terminal-ui-activate (terminal-ui list) boolean)
-(defun terminal-ui-activate (ui action)
-  "Hand clicked transcript ACTION to UI's installed action function.
+
+
+(progn
+ (defgeneric terminal-ui-activate
+     (ui action)
+   (:documentation "Hand clicked transcript ACTION to UI's installed action function.
+
+Returns true when a function received ACTION. Without one, clicks on
+transcript widgets and URLs do nothing."))
+ (defmethod terminal-ui-activate ((ui terminal-ui) action)
+   "Hand clicked transcript ACTION to UI's installed action function.
 
 Returns true when a function received ACTION. Without one, clicks on
 transcript widgets and URLs do nothing."
-  (let ((function (terminal-ui-action-function ui)))
-    (if function
-        (progn
-          (funcall function action)
-          t)
-        nil)))
+   (let ((function (terminal-ui-action-function ui)))
+     (if function
+         (progn (funcall function action) t)
+         nil))))
 
 (-> terminal-ui-call-with-exclusive-input (terminal-ui function) t)
 (defun terminal-ui-call-with-exclusive-input (ui function)
@@ -3522,91 +3529,100 @@ released, so the action may present notices of its own."
 (-> terminal-ui--process-locked-event
     (terminal-ui t &key (:queue-completion-p boolean) (:queue-editing-p boolean))
     (values keyword (option (or string user-message-input))))
+
+
 (defun terminal-ui--process-locked-event
-    (ui event &key queue-completion-p queue-editing-p)
+       (ui event &key queue-completion-p queue-editing-p)
   "Apply EVENT under UI's presentation lock and return its action and payload."
   (terminal-ui--refresh-file-completion ui)
   (unwind-protect
-       (with-terminal-ui-locked (ui)
-    (when (and (terminal-ui-fullscreen-p ui)
-               (terminal-ui-fullscreen-handle-event ui event))
-      (return-from terminal-ui--process-locked-event (values ':changed nil)))
-    (let* ((editor (terminal-ui-editor ui))
-           (text-before (line-editor-text editor))
-           (history-before-p (terminal-ui--editor-history-navigating-p editor))
-           (images-before
-             (terminal-ui--copy-image-attachments
-              (terminal-ui-image-attachments ui)))
-           (contexts-before (copy-list (terminal-ui-file-contexts ui))))
-      (unless history-before-p
-        (setf (terminal-ui-attachment-history-stash ui)
-              (list :text text-before :attachments images-before
-                    :file-contexts contexts-before)))
-      (multiple-value-bind (file-action file-payload)
-          (terminal-ui--handle-file-completion-event ui event)
-        (if file-action
-            (values file-action file-payload)
-            (let* ((completion-items
-                     (and (member event '(:complete :complete-previous))
-                          (terminal-ui--reconcile-completions ui)))
-                   (effective-event
-                     (cond
-                       ((and (eq event :complete-previous) completion-items)
-                        event)
-                       ((and (eq event :complete-previous) queue-editing-p)
-                        ':cycle-queue)
-                       ((eq event :complete-previous)
-                        ':cycle-reasoning)
-                       ((and (eq event :complete)
-                             (null completion-items))
+      (with-terminal-ui-locked (ui)
+        (when
+            (and (terminal-ui-fullscreen-p ui)
+                 (terminal-ui-fullscreen-handle-event ui event))
+          (return-from terminal-ui--process-locked-event (values ':changed nil)))
+        (let* ((editor (terminal-ui-editor ui))
+               (text-before (line-editor-text editor))
+               (history-before-p (terminal-ui--editor-history-navigating-p editor))
+               (images-before
+                (terminal-ui--copy-image-attachments (terminal-ui-image-attachments ui)))
+               (contexts-before (copy-list (terminal-ui-file-contexts ui))))
+          (unless history-before-p
+            (setf (terminal-ui-attachment-history-stash ui)
+                    (list :text text-before :attachments images-before :file-contexts
+                          contexts-before)))
+          (multiple-value-bind (file-action file-payload)
+              (terminal-ui--handle-file-completion-event ui event)
+            (if file-action
+                (values file-action file-payload)
+                (let* ((completion-items
+                        (and (member event '(:complete :complete-previous))
+                             (terminal-ui--reconcile-completions ui)))
+                       (effective-event
                         (cond
-                          ((and queue-editing-p
-                                (zerop (length (line-editor-text editor))))
-                           ':keep-queue-edit)
-                          ((not queue-completion-p) ':submit)
-                          ((plusp (length (line-editor-text editor))) ':queue-submit)
-                          (t ':edit-queue)))
-                       (t event))))
-              (multiple-value-bind (completion-action completion-payload)
-                  (terminal-ui--handle-completion-event ui effective-event)
-                (if completion-action
-                    (values completion-action completion-payload)
-                    (multiple-value-bind (action payload)
-                        (terminal-ui--apply-editor-event ui effective-event)
-                      (when (and history-before-p (eq action :changed)
-                                 (member event '(:down :history-next))
-                                 (not (terminal-ui--editor-history-navigating-p editor)))
-                        (let ((stash (terminal-ui-attachment-history-stash ui)))
-                          (when (equal (getf stash :text) (line-editor-text editor))
-                            (setf (terminal-ui-image-attachments ui)
-                                  (terminal-ui--copy-image-attachments (getf stash :attachments))
-                                  (terminal-ui-file-contexts ui)
-                                  (copy-list (getf stash :file-contexts))))))
-                      (when (eq action :changed)
-                        (terminal-ui--restore-history-images ui)
-                        (terminal-ui--prune-file-contexts ui))
-                      (when (eq action :cleared)
-                        (setf (terminal-ui-file-contexts ui) nil))
-                      (let ((text-after (line-editor-text editor)))
-                        (when (and (eq action :changed)
-                                   (not (eq text-before text-after))
-                                   (not (string= text-before text-after)))
-                          (setf (terminal-ui-completion-dismissed-p ui) nil)))
-                      (when (and (member action '(:submit :queue))
-                                 (stringp payload))
-                        (setf payload (terminal-ui--submission-input ui payload))
-                        (terminal-ui--remember-image-submission
-                         ui text-before
-                         (remove-if-not (lambda (attachment)
-                                          (search (first attachment) text-before))
-                                        images-before)
-                         (user-message-input-file-contexts payload))
-                        (setf (terminal-ui-image-attachments ui) nil
-                              (terminal-ui-file-contexts ui) nil)
-                        (terminal-ui--clear-file-completion ui))
-                      (when (member action '(:changed :cleared :submit :queue))
-                        (terminal-ui--repaint-live ui))
-                      (values action payload)))))))))
+                         ((and (eq event :complete-previous) completion-items
+                               (or (not queue-editing-p)
+                                   (terminal-ui-completion-active-p ui)))
+                          event)
+                         ((and (eq event :complete-previous) queue-editing-p)
+                          ':cycle-queue)
+                         ((eq event :complete-previous) ':cycle-reasoning)
+                         ((and (eq event :complete) (null completion-items))
+                          (cond
+                           ((and queue-editing-p
+                                 (zerop (length (line-editor-text editor))))
+                            ':keep-queue-edit)
+                           ((not queue-completion-p) ':submit)
+                           ((plusp (length (line-editor-text editor))) ':queue-submit)
+                           (t ':edit-queue)))
+                         (t event))))
+                  (multiple-value-bind (completion-action completion-payload)
+                      (terminal-ui--handle-completion-event ui effective-event)
+                    (if completion-action
+                        (values completion-action completion-payload)
+                        (multiple-value-bind (action payload)
+                            (terminal-ui--apply-editor-event ui effective-event)
+                          (when
+                              (and history-before-p (eq action :changed)
+                                   (member event '(:down :history-next))
+                                   (not
+                                    (terminal-ui--editor-history-navigating-p editor)))
+                            (let ((stash (terminal-ui-attachment-history-stash ui)))
+                              (when (equal (getf stash :text) (line-editor-text editor))
+                                (setf (terminal-ui-image-attachments ui)
+                                        (terminal-ui--copy-image-attachments
+                                         (getf stash :attachments))
+                                      (terminal-ui-file-contexts ui)
+                                        (copy-list (getf stash :file-contexts))))))
+                          (when (eq action :changed)
+                            (terminal-ui--restore-history-images ui)
+                            (terminal-ui--prune-file-contexts ui))
+                          (when (eq action :cleared)
+                            (setf (terminal-ui-file-contexts ui) nil))
+                          (let ((text-after (line-editor-text editor)))
+                            (when
+                                (and (eq action :changed)
+                                     (not (eq text-before text-after))
+                                     (not (string= text-before text-after)))
+                              (setf (terminal-ui-completion-dismissed-p ui) nil)))
+                          (when (and (member action '(:submit :queue)) (stringp payload))
+                            (setf payload (terminal-ui--submission-input ui payload))
+                            (terminal-ui--remember-image-submission ui text-before
+                                                                    (remove-if-not
+                                                                     (lambda (attachment)
+                                                                       (search
+                                                                        (first
+                                                                         attachment)
+                                                                        text-before))
+                                                                     images-before)
+                                                                    (user-message-input-file-contexts
+                                                                     payload))
+                            (setf (terminal-ui-image-attachments ui) nil
+                                  (terminal-ui-file-contexts ui) nil)
+                            (terminal-ui--clear-file-completion ui))
+                          (when (member action '(:changed :cleared :submit :queue))
+                            (terminal-ui--repaint-live ui))
+                          (values action payload)))))))))
     (terminal-ui--refresh-file-completion ui)))
 
 (-> terminal-ui--quiesce-file-completion (terminal-ui) null)

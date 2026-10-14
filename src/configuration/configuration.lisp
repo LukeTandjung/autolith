@@ -349,6 +349,20 @@ exist yet, and is only put in directory form."
   :scope :durable
   :default t)
 
+(define-setting :persistent-sessions-p (boolean-setting)
+  :label "Persistent sessions"
+  :group :behavior
+  :documentation "Keep established sessions alive after terminal disconnect."
+  :scope :durable
+  :default t)
+
+(define-setting :prevent-session-sleep-p (boolean-setting)
+  :label "Prevent session sleep"
+  :group :behavior
+  :documentation "Hold a host sleep inhibitor for an interactive session process."
+  :scope :durable
+  :default t)
+
 (define-setting :hurry-up-p (boolean-setting)
   :label "Hurry-up mode"
   :group :behavior
@@ -365,7 +379,8 @@ exist yet, and is only put in directory form."
   :label "Fullscreen"
   :group :terminal
   :documentation "Whether interactive sessions use the fullscreen terminal UI."
-  :scope :durable)
+  :scope :durable
+  :default t)
 
 (define-setting :onboarding-p (boolean-setting)
   :label "Onboarding"

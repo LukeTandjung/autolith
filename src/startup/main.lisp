@@ -356,6 +356,11 @@ closes. Both carry the same styling, rendered for the terminal that shows it."
   "Run APPLICATION with responsive input, always restoring terminal and workers."
   (let* ((ui (application-ui application))
          (worker (application-worker application))
+         ;; Preserve typed-ahead input instead of handing it to the boot screen.
+         ;; Observe readiness before starting the reader, which owns later events.
+         (boot-screen-p
+           (and (config :boot-screen-p (application-configuration application))
+                (not (terminal-input-ready-p (terminal-ui-terminal ui)))))
          (input-controller nil)
          (resize-watch nil)
          (tool-runtimes-closed-p nil)
@@ -371,6 +376,7 @@ closes. Both carry the same styling, rendered for the terminal that shows it."
       (setf (terminal-ui-fullscreen-welcome-p ui) t))
     (labels ((close-runtime-resources ()
                "Close APPLICATION's external runtimes at most once."
+               (ignore-errors (session-awake-release))
                (ignore-errors (localgroup-stop application))
                (ignore-errors (management-repl-stop application))
                (ignore-errors (slynk-stop))
@@ -468,7 +474,8 @@ closes. Both carry the same styling, rendered for the terminal that shows it."
                     (localgroup-start application)
                     (application-startup-presentation
                      application input-controller
-                     :onboarding-p (null recovery-diagnosis))
+                     :onboarding-p (null recovery-diagnosis)
+                     :boot-screen-p boot-screen-p)
                     (management-repl-start application)
                     (slynk-start (application-configuration application)
                                  :background-p t)
@@ -899,6 +906,10 @@ dependencies."
                                  :format-arguments nil))))
           (format *error-output* "Intentional crash capsule: ~A~%" capsule)
           (uiop:quit *main-fatal-recovery-status*)))
+      (when (slot-boundp *active-application* 'configuration)
+        (session-longevity-install
+         (application-configuration *active-application*)
+         :interactive-p t :pristine-p pristine-p))
       (handler-case
           ;; A detached session's launcher only logs this exit, so tell the
           ;; attached terminals before the session unwinds and closes them.
