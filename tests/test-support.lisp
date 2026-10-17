@@ -141,6 +141,8 @@ process-global fixture parent on exit; parallel runs need separate processes."
      :config-root (merge-pathnames "config/" root)
      :site-config-root site-config-root
      :onboarding-p nil
+     ;; Startup fixtures must not wait for input on the optional boot screen.
+     :boot-screen-p nil
      :data-root (merge-pathnames "data/" root)
      :state-root (merge-pathnames "state/" root)
      :cache-root (merge-pathnames "cache/" root)
