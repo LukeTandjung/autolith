@@ -377,22 +377,23 @@ projection use the production implementations without stubs."
                (sidebar-check (null (sidebar-select ui first-id)))
                (sidebar-check (search "owned transcript" (sidebar-view-error ui)))
                (delete-file result-path))
-             (let ((alias (merge-pathnames "outside-alias.sexp" directory)))
-               (uiop/run-program:run-program
-                (list "/bin/ln" "-s"
-                      (namestring
-                       (first
-                        (conversation-storage-pathnames
-                         (conversation-pathname outside))))
-                      (namestring alias)))
-               (setf (slot-value job 'cl-jobpond::result)
-                       (list :conversation-file (namestring alias)))
-               (sidebar-check (null (sidebar-select ui first-id)))
-               (sidebar-check (search "owned transcript" (sidebar-view-error ui)))
-               (sidebar-check
-                (handler-case (progn (sidebar-trace-signature alias directory) nil)
-                              (task-continuity-error nil t)))
-               (delete-file alias))
+             (with-test-fixture (:symbolic-links "sidebar transcript ownership aliases")
+               (let ((alias (merge-pathnames "outside-alias.sexp" directory)))
+                 (test-fixture-make-symbolic-link
+                  *platform*
+                  (namestring
+                   (first
+                    (conversation-storage-pathnames
+                     (conversation-pathname outside))))
+                  (namestring alias))
+                 (setf (slot-value job 'cl-jobpond::result)
+                         (list :conversation-file (namestring alias)))
+                 (sidebar-check (null (sidebar-select ui first-id)))
+                 (sidebar-check (search "owned transcript" (sidebar-view-error ui)))
+                 (sidebar-check
+                  (handler-case (progn (sidebar-trace-signature alias directory) nil)
+                                (task-continuity-error nil t)))
+                 (test-fixture-remove-link *platform* (namestring alias))))
              (setf (slot-value job 'cl-jobpond::result)
                      (list :conversation-file
                            (namestring (conversation-pathname owned))))
